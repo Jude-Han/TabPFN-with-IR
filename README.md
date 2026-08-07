@@ -35,6 +35,25 @@ Dataset identifiers, preprocessing decisions, excluded datasets, and exclusion r
 
 The first phase focuses on classification. Regression can be added later as a separate benchmark because it requires different metrics and may require a different TabPFN checkpoint or interface.
 
+### Choosing an OpenML dataset ID
+
+The command-line runner expects an OpenML **dataset ID**, not an OpenML task ID. The integer in an
+OpenML dataset URL such as `https://www.openml.org/d/31` is the dataset ID; in this example, `31`
+identifies the `credit-g` dataset. A dataset ID resolves to a particular uploaded dataset version. The
+optional `--dataset-version` argument is therefore used as a validation check rather than to select a
+different version behind the same ID.
+
+OpenML-CC18 is benchmark suite `99`. After installing the benchmark dependencies, list its task IDs,
+dataset IDs, versions, targets, and names with:
+
+```bash
+python scripts/list_openml_cc18.py
+```
+
+CC18 task IDs describe benchmark tasks and predefined evaluation settings. The current runner uses
+the associated dataset ID and creates its own deterministic 80/10/10 split; it does not yet reproduce
+the official OpenML task folds.
+
 Each fold should maintain two aligned views of its rows:
 
 - `X_model`: the representation expected by TabPFN; and
@@ -200,6 +219,46 @@ python scripts/run_baseline.py \
 Choose `full`, `random`, or `knn` with `--method`. Full-context inference uses all training rows.
 The initial runner executes one fixed split; manifest-wide sweeps over folds, context budgets, and
 random repetitions will be added on top of the same components.
+
+### Baseline command scripts
+
+The convenience scripts take `DATASET_ID` as the first argument and an optional target name as the
+second argument. If the target is omitted, the OpenML default target is used.
+
+Full-context TabPFN on the final test split:
+
+```bash
+scripts/run_full.sh 31 class
+```
+
+Random retrieval with the same context budget over five retrieval/split seeds:
+
+```bash
+CONTEXT_SIZE=128 RANDOM_SEEDS="0 1 2 3 4" scripts/run_random.sh 31 class
+```
+
+kNN context-size selection on the validation split:
+
+```bash
+K_VALUES="32 64 128 256 512 1000 localpfn" scripts/run_knn_sweep.sh 31 class
+```
+
+`localpfn` resolves to `min(10 * sqrt(n_train), 1000)`. Requested values larger than the training
+fold are automatically capped at `n_train`.
+
+Select `k` using validation results only, with one metric chosen before looking at the test set. ROC
+AUC is the recommended selection metric for consistency with the main benchmark; use log loss when
+probability calibration is the primary target. In a near tie, prefer the smaller `k` because it reduces
+memory and inference cost. Then run the selected budget once on the test split for both kNN and
+random retrieval:
+
+```bash
+K_VALUES="128" EVALUATION_SPLIT=test scripts/run_knn_sweep.sh 31 class
+CONTEXT_SIZE=128 EVALUATION_SPLIT=test scripts/run_random.sh 31 class
+```
+
+The environment variables `EXPERIMENT_SEED`, `DATASET_VERSION`, `PYTHON_COMMAND`, and
+`OUTPUT_DIR` can be used to override the remaining defaults.
 
 ## Implementation roadmap
 
