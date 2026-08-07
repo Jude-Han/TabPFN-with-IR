@@ -43,6 +43,10 @@ if [[ -n "${DATASET_IDS:-}" ]]; then
   read -r -a dataset_ids <<< "${DATASET_IDS}"
   extra_args+=(--dataset-ids "${dataset_ids[@]}")
 fi
+if [[ -n "${DATASET_NAMES:-}" ]]; then
+  read -r -a dataset_names <<< "${DATASET_NAMES}"
+  extra_args+=(--dataset-names "${dataset_names[@]}")
+fi
 if [[ "${ALLOW_COUNT_MISMATCH:-0}" == "1" ]]; then
   extra_args+=(--allow-count-mismatch)
 fi

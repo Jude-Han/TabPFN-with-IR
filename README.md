@@ -470,6 +470,50 @@ DEVICE=cuda:0 K_VALUES="128 256 512 1000 localpfn" \
   scripts/run_localpfn_benchmark.sh /path/to/tabzilla/TabZilla/datasets
 ```
 
+To run the complete TabPFN-v1 benchmark with all three methods while using four
+GPUs at the dataset level:
+
+```bash
+PARALLEL_SHARDS=4 \
+GPU_IDS="0 1 2 3" \
+BENCHMARKS="tabpfn-v1" \
+METHODS="full random knn" \
+K_VALUES="128 256 512 1000 localpfn" \
+N_ESTIMATORS=8 \
+CONTEXT_BATCH_SIZE=32 \
+MODEL_VERSION=v2.6 \
+scripts/run_complete_benchmarks.sh
+```
+
+Run both the TabPFN-v1 and LoCalPFN benchmark suites by also supplying the
+preprocessed TabZilla directory:
+
+```bash
+TABZILLA_ROOT=/path/to/tabzilla/TabZilla/datasets \
+PARALLEL_SHARDS=4 \
+GPU_IDS="0 1 2 3" \
+BENCHMARKS="tabpfn-v1 localpfn" \
+METHODS="full random knn" \
+K_VALUES="128 256 512 1000 localpfn" \
+N_ESTIMATORS=8 \
+CONTEXT_BATCH_SIZE=32 \
+scripts/run_complete_benchmarks.sh
+```
+
+With `PARALLEL_SHARDS=4`, dataset identifiers are assigned round-robin to four
+independent processes, each pinned to one GPU. Every shard writes its own resumable
+JSONL file and log under `outputs/complete/<benchmark>/`; after all workers finish,
+the aggregate CSV summaries are written to `outputs/complete/summary/`. This
+process-level sharding is intentional: TabPFN 8.2's batched context engine uses only
+the first configured device, so one batched kNN process cannot itself spread its
+context batches over four GPUs.
+
+The default complete script runs only `tabpfn-v1`; include `localpfn` in
+`BENCHMARKS` only when `TABZILLA_ROOT` is available. `PARALLEL_SHARDS=1` runs in the
+foreground without dataset sharding. All underlying benchmark calls use `--resume`,
+so rerunning the same command skips successful configurations already present in the
+same output files.
+
 To compare random sampling at dataset-relative budgets, set `RANDOM_RATIOS`. When it is present,
 these values replace `K_VALUES` for the random method only; kNN continues using `K_VALUES`:
 
@@ -492,10 +536,11 @@ invocation appends one JSON object per fold and uses `--resume`; completed confi
 after interruption. Errors, including an out-of-memory full-context run, remain in the JSONL result
 with their exception type and message.
 
-For four GPUs, one process can use `DEVICES="cuda:0 cuda:1 cuda:2 cuda:3"`: batched context inference
-fuses compatible query contexts, while TabPFN distributes ensemble estimators across the devices.
-Dataset-level sharding into four single-GPU processes remains an alternative when independent jobs
-provide better cluster utilization.
+For four GPUs, regular full and random prediction can distribute ensemble members by setting
+`DEVICES="cuda:0 cuda:1 cuda:2 cuda:3"` and using multiple estimators. TabPFN 8.2's batched context
+engine, used by the optimized kNN path, runs on only the first configured device. Use
+`run_complete_benchmarks.sh` with `PARALLEL_SHARDS=4` to distribute whole datasets over four
+single-GPU processes while preserving batched kNN inference within each process.
 
 Summarize any number of result files into fold-level, dataset-level, error, and average-rank tables:
 
