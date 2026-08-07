@@ -284,6 +284,33 @@ python -m pip install --upgrade -e ".[benchmark,dev]"
 python -c "from importlib.metadata import version; print(version('tabpfn'))"
 ```
 
+For headless servers, store the Prior Labs API key in the repository-root `.env`. The populated file
+is ignored by Git:
+
+```bash
+cp .env.example .env
+chmod 600 .env
+```
+
+Edit `.env` so it contains exactly the following assignment, without shell commands around it:
+
+```dotenv
+TABPFN_TOKEN=your_actual_prior_labs_api_key
+```
+
+`run_baseline.py` and `run_benchmark.py` call `load_dotenv(..., override=False)` before constructing
+TabPFN. Therefore a token exported by the job scheduler or shell takes precedence over `.env`. Check
+that a token is visible without printing the secret:
+
+```bash
+python -c "from dotenv import load_dotenv; import os; load_dotenv(); print('TABPFN_TOKEN configured:', bool(os.getenv('TABPFN_TOKEN')))"
+```
+
+The API key does not itself accept a model license. While logged into the same Prior Labs account,
+accept the `tabpfn_2_6` license at the URL reported by TabPFN. If the program still raises
+`TabPFNLicenseError: License not yet accepted` while the check above prints `True`, the account-side
+license acceptance is the remaining step rather than `.env` loading.
+
 Run full-context inference using all four GPUs explicitly:
 
 ```bash

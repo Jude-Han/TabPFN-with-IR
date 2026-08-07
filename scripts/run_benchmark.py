@@ -21,6 +21,7 @@ from tabpfn_ir.data import (
     tabpfn_v1_split_indices,
 )
 from tabpfn_ir.evaluation import run_retrieval_experiment
+from tabpfn_ir.environment import load_project_dotenv
 from tabpfn_ir.models import ContextualTabPFNClassifier, build_tabpfn_classifier_kwargs
 from tabpfn_ir.retrieval import (
     FullContextRetriever,
@@ -389,6 +390,7 @@ def run_fold(fold_input: FoldInput, args: argparse.Namespace) -> dict[str, objec
 
 
 def main() -> None:
+    load_project_dotenv(REPOSITORY_ROOT / ".env", override=False)
     args = parse_args()
     if args.limit is not None and args.limit <= 0:
         raise ValueError("--limit must be positive.")

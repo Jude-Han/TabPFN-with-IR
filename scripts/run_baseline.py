@@ -13,6 +13,7 @@ from tabpfn_ir.data import (
     stratified_train_validation_test_split,
 )
 from tabpfn_ir.evaluation import run_retrieval_experiment
+from tabpfn_ir.environment import load_project_dotenv
 from tabpfn_ir.models import ContextualTabPFNClassifier, build_tabpfn_classifier_kwargs
 from tabpfn_ir.retrieval import (
     FullContextRetriever,
@@ -21,6 +22,9 @@ from tabpfn_ir.retrieval import (
     context_size_from_ratio,
     resolve_context_specification,
 )
+
+
+REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
 
 def parse_args() -> argparse.Namespace:
@@ -81,6 +85,7 @@ def resolve_context_size(specification: str, n_train: int) -> int:
 
 
 def main() -> None:
+    load_project_dotenv(REPOSITORY_ROOT / ".env", override=False)
     args = parse_args()
     if args.random_ratio is not None and args.method != "random":
         raise ValueError("--random-ratio can only be used with --method random.")

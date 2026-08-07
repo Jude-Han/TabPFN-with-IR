@@ -8,6 +8,8 @@ from typing import Any, Protocol
 
 import numpy as np
 
+from tabpfn_ir.environment import load_project_dotenv
+
 
 class ProbabilisticClassifier(Protocol):
     """The minimal estimator API used by the adapter."""
@@ -42,6 +44,9 @@ class ContextualTabPFNClassifier:
     def _new_estimator(self) -> ProbabilisticClassifier:
         if self._estimator_factory is not None:
             return self._estimator_factory()
+        # Also support package users who instantiate the adapter without a CLI.
+        # Exported variables remain authoritative because override=False.
+        load_project_dotenv(override=False)
         try:
             from tabpfn import TabPFNClassifier
         except ImportError as exc:  # pragma: no cover - optional dependency
