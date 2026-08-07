@@ -24,6 +24,20 @@ def localpfn_context_size(n_train: int, *, maximum: int = 1000) -> int:
     return min(int(10 * np.sqrt(n_train)), maximum, n_train)
 
 
+def resolve_context_specification(specification: str, n_train: int) -> int:
+    """Resolve a fixed integer or the LoCalPFN context-size heuristic."""
+
+    if specification.lower() == "localpfn":
+        return localpfn_context_size(n_train)
+    try:
+        context_size = int(specification)
+    except ValueError as exc:
+        raise ValueError("k must be a positive integer or 'localpfn'.") from exc
+    if context_size <= 0:
+        raise ValueError("k must be positive.")
+    return min(context_size, n_train)
+
+
 class KNNRetriever(Retriever):
     """Retrieve a query-specific local context in the retrieval feature space."""
 

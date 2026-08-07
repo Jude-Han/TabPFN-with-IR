@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import StratifiedShuffleSplit, train_test_split
 
 
 @dataclass(frozen=True)
@@ -51,4 +51,38 @@ def stratified_train_validation_test_split(
         train=np.sort(train),
         validation=np.sort(validation),
         test=np.sort(test),
+    )
+
+
+def tabpfn_v1_split_indices(
+    y: np.ndarray,
+    *,
+    n_splits: int = 5,
+    random_state: int = 42,
+) -> tuple[SplitIndices, ...]:
+    """Create the five stratified 50/50 splits described by the TabPFN v1 paper.
+
+    The paper does not publish its exact split seeds. This function implements a
+    deterministic protocol-compatible reconstruction and leaves validation empty.
+    """
+
+    y = np.asarray(y)
+    if y.ndim != 1:
+        raise ValueError(f"y must be one-dimensional, got shape {y.shape}.")
+    if n_splits <= 0:
+        raise ValueError("n_splits must be positive.")
+    splitter = StratifiedShuffleSplit(
+        n_splits=n_splits,
+        train_size=0.5,
+        test_size=0.5,
+        random_state=random_state,
+    )
+    placeholder = np.zeros((y.shape[0], 1), dtype=np.uint8)
+    return tuple(
+        SplitIndices(
+            train=np.sort(train),
+            validation=np.empty(0, dtype=np.int64),
+            test=np.sort(test),
+        )
+        for train, test in splitter.split(placeholder, y)
     )

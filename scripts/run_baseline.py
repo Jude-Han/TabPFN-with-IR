@@ -13,12 +13,13 @@ from tabpfn_ir.data import (
     stratified_train_validation_test_split,
 )
 from tabpfn_ir.evaluation import run_retrieval_experiment
-from tabpfn_ir.models import ContextualTabPFNClassifier
+from tabpfn_ir.models import ContextualTabPFNClassifier, build_tabpfn_classifier_kwargs
 from tabpfn_ir.retrieval import (
     FullContextRetriever,
     KNNRetriever,
     RandomRetriever,
-    localpfn_context_size,
+    context_size_from_ratio,
+    resolve_context_specification,
 )
 
 
@@ -33,8 +34,28 @@ def parse_args() -> argparse.Namespace:
         default="128",
         help="Positive context size or 'localpfn' for min(10 * sqrt(n_train), 1000).",
     )
+    parser.add_argument(
+        "--random-ratio",
+        type=float,
+        help=(
+            "For random retrieval, sample ceil(ratio * n_train) rows. "
+            "Must be in (0, 1] and takes precedence over --k."
+        ),
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--devices",
+        nargs="+",
+        help="Explicit device list, for example cuda:0 cuda:1 cuda:2 cuda:3.",
+    )
+    parser.add_argument("--ignore-pretraining-limits", action="store_true")
+    parser.add_argument(
+        "--fit-mode",
+        choices=["fit_preprocessors", "low_memory", "fit_with_cache"],
+        default="fit_preprocessors",
+    )
+    parser.add_argument("--n-estimators", type=int)
     parser.add_argument(
         "--evaluation-split",
         choices=["validation", "test"],
@@ -54,21 +75,15 @@ def build_retriever(method: str, seed: int):
 
 
 def resolve_context_size(specification: str, n_train: int) -> int:
-    """Resolve an integer or LoCalPFN context-size specification."""
+    """Backward-compatible wrapper used by existing commands and tests."""
 
-    if specification.lower() == "localpfn":
-        return localpfn_context_size(n_train)
-    try:
-        context_size = int(specification)
-    except ValueError as exc:
-        raise ValueError("--k must be a positive integer or 'localpfn'.") from exc
-    if context_size <= 0:
-        raise ValueError("--k must be positive.")
-    return min(context_size, n_train)
+    return resolve_context_specification(specification, n_train)
 
 
 def main() -> None:
     args = parse_args()
+    if args.random_ratio is not None and args.method != "random":
+        raise ValueError("--random-ratio can only be used with --method random.")
     dataset = load_openml_dataset(
         args.dataset_id,
         version=args.dataset_version,
@@ -86,12 +101,26 @@ def main() -> None:
     query_views = preprocessor.transform(X_query)
 
     retriever = build_retriever(args.method, args.seed)
-    predictor = ContextualTabPFNClassifier(tabpfn_kwargs={"device": args.device})
-    context_size = (
-        None
-        if args.method == "full"
-        else resolve_context_size(args.k, n_train=train_views.model.shape[0])
+    tabpfn_kwargs = build_tabpfn_classifier_kwargs(
+        device=args.device,
+        devices=args.devices,
+        ignore_pretraining_limits=args.ignore_pretraining_limits,
+        fit_mode=args.fit_mode,
+        n_estimators=args.n_estimators,
     )
+    predictor = ContextualTabPFNClassifier(tabpfn_kwargs=tabpfn_kwargs)
+    if args.method == "full":
+        context_size = None
+        context_specification = None
+    elif args.random_ratio is not None:
+        context_size = context_size_from_ratio(
+            args.random_ratio,
+            train_views.model.shape[0],
+        )
+        context_specification = f"ratio:{args.random_ratio:g}"
+    else:
+        context_size = resolve_context_size(args.k, n_train=train_views.model.shape[0])
+        context_specification = args.k
     result = run_retrieval_experiment(
         retriever=retriever,
         predictor=predictor,
@@ -112,8 +141,10 @@ def main() -> None:
             "target": dataset.target_name,
         },
         "seed": args.seed,
+        "tabpfn_configuration": tabpfn_kwargs,
         "evaluation_split": args.evaluation_split,
-        "context_specification": None if args.method == "full" else args.k,
+        "context_specification": context_specification,
+        "random_ratio": args.random_ratio,
         "result": result.to_dict(),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

@@ -18,7 +18,7 @@ dependencies = [
 benchmark = [
     "openml>=0.15,<1",
     "PyYAML>=6,<7",
-    "tabpfn>=2,<3",
+    "tabpfn>=7,<8",
 ]
 dev = [
     "pytest>=8,<10",

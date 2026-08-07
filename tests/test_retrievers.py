@@ -5,6 +5,7 @@ from tabpfn_ir.retrieval import (
     FullContextRetriever,
     KNNRetriever,
     RandomRetriever,
+    context_size_from_ratio,
     localpfn_context_size,
 )
 
@@ -51,3 +52,13 @@ def test_localpfn_context_size_implements_paper_heuristic():
     assert localpfn_context_size(25) == 25
     assert localpfn_context_size(10_000) == 1000
     assert localpfn_context_size(1_000_000) == 1000
+
+
+def test_context_ratio_uses_ceiling_and_validates_range():
+    assert context_size_from_ratio(0.10, 101) == 11
+    assert context_size_from_ratio(0.001, 10) == 1
+    assert context_size_from_ratio(1.0, 10) == 10
+    with pytest.raises(ValueError):
+        context_size_from_ratio(0, 10)
+    with pytest.raises(ValueError):
+        context_size_from_ratio(1.01, 10)

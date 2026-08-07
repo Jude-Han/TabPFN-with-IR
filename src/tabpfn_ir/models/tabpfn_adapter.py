@@ -49,6 +49,17 @@ class ContextualTabPFNClassifier:
                 "TabPFN support is optional. Install the project with "
                 "`pip install -e '.[benchmark]'`."
             ) from exc
+        selected_devices = self._tabpfn_kwargs.get("device")
+        if isinstance(selected_devices, (list, tuple)) and len(selected_devices) > 1:
+            try:
+                from tabpfn.utils import infer_devices
+            except ImportError as exc:  # pragma: no cover - depends on TabPFN version
+                raise RuntimeError(
+                    "The installed TabPFN does not expose its multi-GPU device API. "
+                    "Install a current multi-GPU release, for example "
+                    "`pip install --upgrade 'tabpfn>=7,<8'`."
+                ) from exc
+            infer_devices(selected_devices)
         return TabPFNClassifier(**self._tabpfn_kwargs)
 
     @staticmethod
@@ -58,7 +69,9 @@ class ContextualTabPFNClassifier:
         global_classes: np.ndarray,
     ) -> np.ndarray:
         aligned = np.zeros((probabilities.shape[0], global_classes.shape[0]), dtype=float)
-        global_positions = {label: position for position, label in enumerate(global_classes.tolist())}
+        global_positions = {
+            label: position for position, label in enumerate(global_classes.tolist())
+        }
         for local_position, label in enumerate(np.asarray(local_classes).tolist()):
             aligned[:, global_positions[label]] = probabilities[:, local_position]
         return aligned
@@ -91,9 +104,18 @@ class ContextualTabPFNClassifier:
         for query_position, row_indices in enumerate(context_indices):
             grouped_queries[tuple(int(index) for index in row_indices)].append(query_position)
 
-        estimator = self._new_estimator()
+        estimator: ProbabilisticClassifier | None = None
+        global_positions = {
+            label: position for position, label in enumerate(global_classes.tolist())
+        }
         for context, query_positions in grouped_queries.items():
             selected = np.asarray(context, dtype=np.int64)
+            context_classes = np.unique(y_train[selected])
+            if context_classes.shape[0] == 1:
+                output[query_positions, global_positions[context_classes[0]]] = 1.0
+                continue
+            if estimator is None:
+                estimator = self._new_estimator()
             estimator.fit(X_train[selected], y_train[selected])
             local_probabilities = np.asarray(
                 estimator.predict_proba(X_query[query_positions]),

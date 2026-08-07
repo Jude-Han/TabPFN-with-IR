@@ -43,6 +43,7 @@ def run_retrieval_experiment(
     X_query_retrieval: np.ndarray,
     y_query: np.ndarray,
     k: int | None,
+    auc_mode: str = "ovr",
 ) -> ExperimentResult:
     """Fit a retriever, build contexts, predict, and evaluate one query split."""
 
@@ -72,5 +73,10 @@ def run_retrieval_experiment(
         index_seconds=index_seconds,
         retrieval_seconds=retrieval_seconds,
         prediction_seconds=prediction_seconds,
-        metrics=classification_metrics(y_query, probabilities, classes),
+        metrics=classification_metrics(
+            y_query,
+            probabilities,
+            classes,
+            auc_mode=auc_mode,
+        ),
     )

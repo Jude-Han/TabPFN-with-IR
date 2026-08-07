@@ -142,7 +142,7 @@ The second setting is the stronger test of a foundation-style plug-and-play retr
 
 ### Metrics
 
-The primary classification metrics are ROC AUC (binary or macro one-vs-rest for multiclass tasks) and log loss. Accuracy and balanced accuracy will be included as secondary metrics. If a dataset does not support a metric in a particular fold, that dataset-fold result will be marked missing with a documented reason.
+The primary classification metrics are ROC AUC (binary or macro one-vs-one for multiclass tasks) and log loss. The paper-benchmark runner uses OVO to match TabPFN v1 and LoCalPFN. Accuracy, balanced accuracy, and weighted F1 are included as secondary metrics. If a dataset does not support a metric in a particular fold, that dataset-fold result is saved as a documented failure rather than silently omitted.
 
 Results will be reported both per dataset and in aggregate. Aggregate summaries should include average rank and a robust statistic such as the interquartile mean, together with confidence intervals computed across datasets or by an explicitly documented stratified bootstrap.
 
@@ -237,6 +237,20 @@ Random retrieval with the same context budget over five retrieval/split seeds:
 CONTEXT_SIZE=128 RANDOM_SEEDS="0 1 2 3 4" scripts/run_random.sh 31 class
 ```
 
+Random retrieval can instead use a fraction of the current **training fold**. For example, 10% uses
+`ceil(0.10 * n_train)` rows and always selects at least one row:
+
+```bash
+CONTEXT_RATIO=0.10 RANDOM_SEEDS="0 1 2 3 4" scripts/run_random.sh 31 class
+
+# Equivalent direct CLI option
+python scripts/run_baseline.py \
+  --dataset-id 31 --method random --random-ratio 0.10 \
+  --output outputs/credit-g-random-ratio-010.json
+```
+
+`CONTEXT_RATIO` takes precedence over `CONTEXT_SIZE` and must satisfy `0 < ratio <= 1`.
+
 kNN context-size selection on the validation split:
 
 ```bash
@@ -260,17 +274,184 @@ CONTEXT_SIZE=128 EVALUATION_SPLIT=test scripts/run_random.sh 31 class
 The environment variables `EXPERIMENT_SEED`, `DATASET_VERSION`, `PYTHON_COMMAND`, and
 `OUTPUT_DIR` can be used to override the remaining defaults.
 
+### Multi-GPU TabPFN inference
+
+The benchmark extra now targets TabPFN 7.x because its public classifier API accepts a list of CUDA
+devices. Upgrade the existing environment after installing a CUDA-compatible PyTorch build:
+
+```bash
+python -m pip install --upgrade -e ".[benchmark,dev]"
+python -c "from importlib.metadata import version; print(version('tabpfn'))"
+```
+
+Run full-context inference using all four GPUs explicitly:
+
+```bash
+DEVICES="cuda:0 cuda:1 cuda:2 cuda:3" \
+FIT_MODE=fit_preprocessors \
+N_ESTIMATORS=8 \
+scripts/run_full.sh 6
+```
+
+On TabPFN 7.x, `DEVICE=auto` also selects all visible CUDA GPUs. An explicit `DEVICES` list is useful
+for reproducibility and GPU allocation. Multi-GPU inference parallelizes ensemble estimators; it does
+not partition one training context's rows across GPU memory. It is supported for
+`FIT_MODE=fit_preprocessors` and `FIT_MODE=low_memory`, but not `fit_with_cache`. Choose at least as
+many estimators as GPUs; a multiple such as 8 or 16 generally distributes work more evenly.
+
+The input-size check is independent of GPU count. If an intentionally pinned model still reports a
+pretraining-limit error, it can be overridden explicitly:
+
+```bash
+DEVICES="cuda:0 cuda:1 cuda:2 cuda:3" \
+FIT_MODE=low_memory \
+N_ESTIMATORS=8 \
+IGNORE_PRETRAINING_LIMITS=1 \
+scripts/run_full.sh 6
+```
+
+`IGNORE_PRETRAINING_LIMITS=1` only disables the guard. It does not make the model pretrained for that
+data scale, reduce memory use, or guarantee valid benchmark quality. Record this setting separately
+from runs that stay within the active checkpoint's limits. The same `DEVICES`, `FIT_MODE`,
+`N_ESTIMATORS`, and `IGNORE_PRETRAINING_LIMITS` variables are supported by the random, kNN, TabPFN
+v1, and LoCalPFN scripts.
+
+In particular, OpenML dataset ID 6 is `letter`: it has 20,000 rows and 26 target classes. The default
+80/10/10 runner therefore sends 16,000 training rows to TabPFN, which explains the reported error.
+It may subsequently exceed the active checkpoint's built-in class limit as well. Multi-GPU inference
+does not remove either semantic limit. Dataset 6 is intentionally absent from the TabPFN v1 30-dataset
+manifest and from the LoCalPFN benchmark, whose selected tasks have at most 10 classes. Supporting it
+through a many-class decomposition would be a separate experimental method and should not be mixed
+into the three current retrieval baselines without being reported separately.
+
+## Paper benchmark runners
+
+The repository includes two paper-oriented benchmark sources:
+
+- **TabPFN v1:** the fixed 30 OpenML dataset IDs in Table 7, stored in
+  `data/manifests/tabpfn_v1_30.json`. The runner creates five deterministic stratified 50/50
+  train/test splits and reports macro OVO ROC AUC. The paper did not publish its exact random split
+  seeds, so these are protocol-compatible reconstructed splits, not the authors' original indices.
+- **LoCalPFN:** the classification datasets discovered from a locally preprocessed TabZilla copy,
+  using the filters in the public LoCalPFN code: at most 100 features and 10 classes, no regression,
+  and exclusion of the four named datasets known to contain missing values. The original stored ten
+  TabZilla train/validation/test folds are used without resplitting.
+
+Here “TabPFN v1” names the v1 paper's **dataset and split benchmark**. Prediction still uses the
+`TabPFNClassifier` supplied by the installed `tabpfn` 2.x package, so the resulting numbers are not
+intended to reproduce the historical v1 checkpoint exactly. The model package/checkpoint version
+should be recorded alongside final results.
+
+The LoCalPFN paper text states 47 small plus 48 medium/large datasets (95 total), while the dataset
+rows visible in its appendix tables do not enumerate all 95. For this reason, benchmark membership
+is derived from the official public code and local TabZilla metadata instead of inventing a static
+list from the incomplete table. By default, the runner checks that exactly 95 datasets are found.
+
+### Prepare the LoCalPFN/TabZilla data
+
+TabZilla preprocessing is separate from this project's environment and can take substantial time and
+disk space:
+
+```bash
+git clone https://github.com/naszilla/tabzilla.git
+cd tabzilla/TabZilla
+python tabzilla_data_preprocessing.py --process_all
+```
+
+The path passed to this project is the resulting `tabzilla/TabZilla/datasets` directory. OpenML may
+require an API key on servers with download limits.
+
+### Smoke tests
+
+Run one dataset and one fold before starting a complete sweep:
+
+```bash
+python scripts/run_benchmark.py \
+  --benchmark tabpfn-v1 \
+  --dataset-ids 31 \
+  --folds 0 \
+  --method knn \
+  --k localpfn \
+  --device cuda:0 \
+  --output outputs/smoke-v1.jsonl
+
+python scripts/run_benchmark.py \
+  --benchmark localpfn \
+  --tabzilla-root /path/to/tabzilla/TabZilla/datasets \
+  --limit 1 \
+  --folds 0 \
+  --method random \
+  --k 128 \
+  --device cuda:0 \
+  --allow-count-mismatch \
+  --output outputs/smoke-localpfn.jsonl
+```
+
+`--max-query-samples N` is available for an even smaller inference smoke test. It must not be used
+for final paper numbers. `--dataset-ids` means OpenML **dataset IDs** for TabPFN v1, but OpenML
+**task IDs** parsed from TabZilla directory names for LoCalPFN.
+
+### Complete three-baseline sweeps
+
+The convenience scripts run full context, global random sampling, and query-specific kNN. Their
+default context budget for random and kNN is the LoCalPFN heuristic; fixed budgets can be supplied
+through `K_VALUES`:
+
+```bash
+DEVICE=cuda:0 K_VALUES="128 256 512 1000 localpfn" \
+  scripts/run_tabpfn_v1_benchmark.sh
+
+DEVICE=cuda:0 K_VALUES="128 256 512 1000 localpfn" \
+  scripts/run_localpfn_benchmark.sh /path/to/tabzilla/TabZilla/datasets
+```
+
+To compare random sampling at dataset-relative budgets, set `RANDOM_RATIOS`. When it is present,
+these values replace `K_VALUES` for the random method only; kNN continues using `K_VALUES`:
+
+```bash
+DEVICE=cuda:0 \
+METHODS="random knn" \
+RANDOM_RATIOS="0.01 0.05 0.10 0.20" \
+K_VALUES="128 256 512 1000 localpfn" \
+scripts/run_tabpfn_v1_benchmark.sh
+```
+
+The JSONL record stores both `random_ratio` and a `context_specification` such as `ratio:0.1`; the
+fold result's `actual_k` contains the resulting integer number of sampled rows.
+
+Useful overrides are `METHODS="full random knn"`, `FOLDS="0 1 ..."`, `DATASET_IDS="..."`,
+`RANDOM_RATIOS`, `EVALUATION_SPLIT`, `EXPERIMENT_SEED`, `OUTPUT`, and `PYTHON_COMMAND`. For LoCalPFN, use
+`EVALUATION_SPLIT=validation` when choosing `k`, then rerun only the chosen configuration with
+`EVALUATION_SPLIT=test`. The reconstructed TabPFN v1 protocol has no validation partition. Every
+invocation appends one JSON object per fold and uses `--resume`; completed configurations are skipped
+after interruption. Errors, including an out-of-memory full-context run, remain in the JSONL result
+with their exception type and message.
+
+For four GPUs, launch disjoint `DATASET_IDS` shards with `DEVICE=cuda:0` through `cuda:3`, or expose
+one physical GPU per process with `CUDA_VISIBLE_DEVICES` and use `DEVICE=cuda:0`. A single benchmark
+process does not automatically distribute query-specific contexts across GPUs.
+
+Summarize any number of result files into fold-level, dataset-level, error, and average-rank tables:
+
+```bash
+python scripts/summarize_benchmark.py \
+  outputs/tabpfn-v1/results.jsonl \
+  outputs/localpfn/results.jsonl \
+  --output-dir outputs/summary
+```
+
+The kNN adapter currently performs a separate frozen TabPFN context fit for each unique retrieved
+context. This matches the intended query-specific evaluation but is expensive, especially across 10
+LoCalPFN folds. Start with the smoke commands and estimate runtime before launching all datasets.
+
 ## Implementation roadmap
 
-1. Create a dataset manifest for the union of OpenML-CC18 and the LoCalPFN benchmark.
-2. Implement deterministic dataset loading, split handling, and fold-safe preprocessing.
-3. Add the full-context, random, and per-query kNN retrievers behind the common interface.
-4. Add a frozen TabPFN adapter that supports query-specific contexts and batched inference.
-5. Run context-budget-matched baseline experiments and validate them on a small dataset subset.
-6. Scale the benchmark to all eligible datasets and record predictive and efficiency metrics.
-7. Build an oracle or leave-one-out utility analysis to study which rows actually help TabPFN.
-8. Train a retrieval model from the resulting relevance signal and compare it with random and kNN retrieval.
-9. Add candidate generation, reranking, diversity constraints, and retrieval caching for large datasets.
+1. Run context-budget-matched baselines on the implemented TabPFN v1 and LoCalPFN suites.
+2. Validate benchmark counts, runtime, and result aggregation on a small dataset subset.
+3. Scale the benchmark to all eligible datasets and record predictive and efficiency metrics.
+4. Build an oracle or leave-one-out utility analysis to study which rows actually help TabPFN.
+5. Train a retrieval model from the resulting relevance signal and compare it with random and kNN retrieval.
+6. Add candidate generation, reranking, diversity constraints, and retrieval caching for large datasets.
 
 ## Reproducibility principles
 
@@ -283,8 +464,14 @@ The environment variables `EXPERIMENT_SEED`, `DATASET_VERSION`, `PYTHON_COMMAND`
 
 ## Project status
 
-This repository is in the research-design and baseline-implementation stage. The immediate milestone is a reproducible comparison of full-context TabPFN, random row retrieval, and LoCalPFN-style kNN row retrieval without supervised fine-tuning.
+The baseline implementation now supports the TabPFN v1 30-dataset protocol and the official
+TabZilla folds selected by the LoCalPFN filters. The immediate milestone is to run and validate the
+full-context, random-row, and LoCalPFN-style kNN comparison without supervised fine-tuning.
 
 ## Reference
 
-- *Retrieval & Fine-Tuning for In-Context Tabular Models. (Thomas et al. 2024)*
+- [*Retrieval & Fine-Tuning for In-Context Tabular Models*](https://github.com/layer6ai-labs/LoCalPFN)
+  (Thomas et al. 2024)
+- [*TabPFN: A Transformer That Solves Small Tabular Classification Problems in a Second*](https://arxiv.org/abs/2207.01848)
+  (Hollmann et al. 2022)
+- [TabZilla official repository](https://github.com/naszilla/tabzilla)

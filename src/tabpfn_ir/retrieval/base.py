@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from math import ceil
 
 import numpy as np
 
@@ -74,3 +75,13 @@ def resolve_context_size(k: int | None, n_train: int) -> int:
     if k <= 0:
         raise ValueError("k must be positive.")
     return min(k, n_train)
+
+
+def context_size_from_ratio(ratio: float, n_train: int) -> int:
+    """Convert a training-row ratio to a non-empty integer context size."""
+
+    if n_train <= 0:
+        raise ValueError("n_train must be positive.")
+    if not 0 < ratio <= 1:
+        raise ValueError("The context ratio must be greater than 0 and at most 1.")
+    return min(max(ceil(ratio * n_train), 1), n_train)

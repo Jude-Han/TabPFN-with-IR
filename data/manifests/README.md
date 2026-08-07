@@ -6,3 +6,7 @@ dataset by name alone because names can be duplicated or point to different Open
 
 Split indices produced for an experiment should be stored separately from the manifest and keyed by
 dataset ID, version, fold, and seed.
+
+`tabpfn_v1_30.json` is the fixed Table 7 list. LoCalPFN membership is intentionally not duplicated
+as a static manifest: `scripts/run_benchmark.py` applies the public LoCalPFN filters to the official
+TabZilla metadata and consumes the stored TabZilla folds.

@@ -42,3 +42,19 @@ def test_adapter_groups_shared_context_and_runner_returns_metrics():
     assert result.index_seconds >= 0
     assert result.retrieval_seconds >= 0
     assert result.prediction_seconds >= 0
+
+
+def test_adapter_handles_a_single_class_context_without_fitting_tabpfn():
+    predictor = ContextualTabPFNClassifier(
+        estimator_factory=lambda: (_ for _ in ()).throw(AssertionError("must not fit"))
+    )
+
+    probabilities, classes = predictor.predict_proba_with_contexts(
+        X_train=np.asarray([[0.0], [1.0], [10.0], [11.0]]),
+        y_train=np.asarray([0, 0, 1, 1]),
+        X_query=np.asarray([[0.1], [10.1]]),
+        context_indices=np.asarray([[0, 1], [2, 3]]),
+    )
+
+    assert classes.tolist() == [0, 1]
+    assert probabilities.tolist() == [[1.0, 0.0], [0.0, 1.0]]
