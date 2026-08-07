@@ -24,6 +24,12 @@ class ExperimentResult:
     index_seconds: float
     retrieval_seconds: float
     prediction_seconds: float
+    unique_contexts: int
+    single_class_contexts: int
+    batched_contexts: int
+    sequential_contexts: int
+    context_batches: int
+    used_batched_inference: bool
     metrics: dict[str, float]
 
     def to_dict(self) -> dict[str, object]:
@@ -63,6 +69,7 @@ def run_retrieval_experiment(
         retrieval.indices,
     )
     prediction_seconds = perf_counter() - started
+    inference_stats = predictor.last_inference_stats
 
     return ExperimentResult(
         method=type(retriever).__name__,
@@ -73,6 +80,12 @@ def run_retrieval_experiment(
         index_seconds=index_seconds,
         retrieval_seconds=retrieval_seconds,
         prediction_seconds=prediction_seconds,
+        unique_contexts=inference_stats.unique_contexts,
+        single_class_contexts=inference_stats.single_class_contexts,
+        batched_contexts=inference_stats.batched_contexts,
+        sequential_contexts=inference_stats.sequential_contexts,
+        context_batches=inference_stats.context_batches,
+        used_batched_inference=inference_stats.used_batched_inference,
         metrics=classification_metrics(
             y_query,
             probabilities,

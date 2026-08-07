@@ -19,7 +19,7 @@ benchmark = [
     "openml>=0.15,<1",
     "python-dotenv>=1,<2",
     "PyYAML>=6,<7",
-    "tabpfn>=7,<8",
+    "tabpfn==8.2.0",
 ]
 dev = [
     "pytest>=8,<10",

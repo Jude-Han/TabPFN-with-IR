@@ -8,6 +8,8 @@ evaluation_split="${EVALUATION_SPLIT:-test}"
 python_command="${PYTHON_COMMAND:-python}"
 device="${DEVICE:-auto}"
 fit_mode="${FIT_MODE:-fit_preprocessors}"
+model_version="${MODEL_VERSION:-v2.6}"
+context_batch_size="${CONTEXT_BATCH_SIZE:-32}"
 repository_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 output_dir="${OUTPUT_DIR:-${repository_dir}/outputs/dataset-${dataset_id}}"
 
@@ -17,6 +19,8 @@ common_args=(
   --seed "${experiment_seed}"
   --device "${device}"
   --fit-mode "${fit_mode}"
+  --model-version "${model_version}"
+  --context-batch-size "${context_batch_size}"
   --evaluation-split "${evaluation_split}"
   --output "${output_dir}/full-seed-${experiment_seed}-${evaluation_split}.json"
 )
@@ -29,6 +33,9 @@ if [[ "${IGNORE_PRETRAINING_LIMITS:-0}" == "1" ]]; then
 fi
 if [[ -n "${N_ESTIMATORS:-}" ]]; then
   common_args+=(--n-estimators "${N_ESTIMATORS}")
+fi
+if [[ "${DISABLE_BATCHED_CONTEXTS:-0}" == "1" ]]; then
+  common_args+=(--disable-batched-contexts)
 fi
 if [[ -n "${target_name}" ]]; then
   common_args+=(--target "${target_name}")

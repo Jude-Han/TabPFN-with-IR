@@ -101,6 +101,23 @@ def parse_args() -> argparse.Namespace:
         default="fit_preprocessors",
     )
     parser.add_argument("--n-estimators", type=int)
+    parser.add_argument(
+        "--model-version",
+        choices=["v2.6"],
+        default="v2.6",
+        help="Pinned TabPFN checkpoint family. TabPFN 8.x otherwise defaults to v3.",
+    )
+    parser.add_argument(
+        "--context-batch-size",
+        type=int,
+        default=32,
+        help="Maximum compatible query-specific contexts per fused TabPFN forward.",
+    )
+    parser.add_argument(
+        "--disable-batched-contexts",
+        action="store_true",
+        help="Use the legacy one-fit-and-predict-per-context path for comparison.",
+    )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
         "--evaluation-split",
@@ -376,7 +393,12 @@ def run_fold(fold_input: FoldInput, args: argparse.Namespace) -> dict[str, objec
     )
     result = run_retrieval_experiment(
         retriever=build_retriever(args.method, retrieval_seed),
-        predictor=ContextualTabPFNClassifier(tabpfn_kwargs=tabpfn_kwargs),
+        predictor=ContextualTabPFNClassifier(
+            tabpfn_kwargs=tabpfn_kwargs,
+            model_version=args.model_version,
+            context_batch_size=args.context_batch_size,
+            use_batched_contexts=not args.disable_batched_contexts,
+        ),
         X_train_model=train_views.model,
         X_train_retrieval=train_views.retrieval,
         y_train=y_train,
@@ -394,6 +416,8 @@ def main() -> None:
     args = parse_args()
     if args.limit is not None and args.limit <= 0:
         raise ValueError("--limit must be positive.")
+    if args.context_batch_size <= 0:
+        raise ValueError("--context-batch-size must be positive.")
     if args.random_ratio is not None:
         if args.method != "random":
             raise ValueError("--random-ratio can only be used with --method random.")
@@ -405,6 +429,12 @@ def main() -> None:
         fit_mode=args.fit_mode,
         n_estimators=args.n_estimators,
     )
+    tabpfn_configuration = {
+        **tabpfn_kwargs,
+        "model_version": args.model_version,
+        "context_batch_size": args.context_batch_size,
+        "batched_contexts": not args.disable_batched_contexts,
+    }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     completed = _completed_keys(args.output) if args.resume else set()
     versions = software_versions()
@@ -437,7 +467,7 @@ def main() -> None:
             "random_ratio": args.random_ratio,
             "seed": args.seed,
             "device": tabpfn_kwargs["device"],
-            "tabpfn_configuration": tabpfn_kwargs,
+            "tabpfn_configuration": tabpfn_configuration,
             "software_versions": versions,
         }
         if _result_key(base_record) in completed:

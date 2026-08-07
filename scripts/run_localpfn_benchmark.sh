@@ -11,7 +11,12 @@ methods="${METHODS:-full random knn}"
 k_values="${K_VALUES:-localpfn}"
 random_ratios="${RANDOM_RATIOS:-}"
 output="${OUTPUT:-${repository_dir}/outputs/localpfn/results.jsonl}"
-extra_args=()
+model_version="${MODEL_VERSION:-v2.6}"
+context_batch_size="${CONTEXT_BATCH_SIZE:-32}"
+extra_args=(
+  --model-version "${model_version}"
+  --context-batch-size "${context_batch_size}"
+)
 
 if [[ -n "${DEVICES:-}" ]]; then
   read -r -a selected_devices <<< "${DEVICES}"
@@ -25,6 +30,9 @@ if [[ -n "${FIT_MODE:-}" ]]; then
 fi
 if [[ -n "${N_ESTIMATORS:-}" ]]; then
   extra_args+=(--n-estimators "${N_ESTIMATORS}")
+fi
+if [[ "${DISABLE_BATCHED_CONTEXTS:-0}" == "1" ]]; then
+  extra_args+=(--disable-batched-contexts)
 fi
 
 if [[ -n "${FOLDS:-}" ]]; then

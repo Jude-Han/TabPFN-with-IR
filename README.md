@@ -276,13 +276,20 @@ The environment variables `EXPERIMENT_SEED`, `DATASET_VERSION`, `PYTHON_COMMAND`
 
 ### Multi-GPU TabPFN inference
 
-The benchmark extra now targets TabPFN 7.x because its public classifier API accepts a list of CUDA
-devices. Upgrade the existing environment after installing a CUDA-compatible PyTorch build:
+The benchmark environment is pinned to `tabpfn==8.2.0`. Upgrade the existing environment after
+installing a CUDA-compatible PyTorch build:
 
 ```bash
 python -m pip install --upgrade -e ".[benchmark,dev]"
 python -c "from importlib.metadata import version; print(version('tabpfn'))"
 ```
+
+The second command must print `8.2.0`. TabPFN 8.x defaults to the v3 checkpoint, but this project
+deliberately constructs the classifier with
+`TabPFNClassifier.create_default_for_version(ModelVersion.V2_6, ...)`. Therefore the expected model
+download remains `tabpfn-v2.6-classifier-v2.6_default.ckpt`. The CLI also records
+`"model_version": "v2.6"` in every result, and currently rejects any other value to prevent an
+accidental backbone change during the retrieval comparison.
 
 For headless servers, store the Prior Labs API key in the repository-root `.env`. The populated file
 is ignored by Git:
@@ -320,11 +327,35 @@ N_ESTIMATORS=8 \
 scripts/run_full.sh 6
 ```
 
-On TabPFN 7.x, `DEVICE=auto` also selects all visible CUDA GPUs. An explicit `DEVICES` list is useful
+On TabPFN 8.2, `DEVICE=auto` also selects all visible CUDA GPUs. An explicit `DEVICES` list is useful
 for reproducibility and GPU allocation. Multi-GPU inference parallelizes ensemble estimators; it does
 not partition one training context's rows across GPU memory. It is supported for
 `FIT_MODE=fit_preprocessors` and `FIT_MODE=low_memory`, but not `fit_with_cache`. Choose at least as
 many estimators as GPUs; a multiple such as 8 or 16 generally distributes work more evenly.
+
+For kNN, TabPFN 8.2's `predict_proba_batched` API also fuses several independent query contexts into
+one forward pass. The adapter groups contexts only when their context shape, query shape, and class
+set are compatible, then limits each fused call with `CONTEXT_BATCH_SIZE`. This removes the previous
+one-GPU-launch-per-query bottleneck while the explicit device list distributes ensemble work over all
+four GPUs:
+
+```bash
+DEVICES="cuda:0 cuda:1 cuda:2 cuda:3" \
+FIT_MODE=fit_preprocessors \
+N_ESTIMATORS=8 \
+MODEL_VERSION=v2.6 \
+CONTEXT_BATCH_SIZE=32 \
+K_VALUES="128" \
+EVALUATION_SPLIT=test \
+scripts/run_knn_sweep.sh 31 class
+```
+
+Start with `CONTEXT_BATCH_SIZE=32` on four RTX 3090 GPUs. Try `64` if memory headroom remains and GPU
+utilization is low; reduce it to `16` or `8` after an out-of-memory error. This value changes only
+execution chunking, not the retrieved rows or intended predictions. Set
+`DISABLE_BATCHED_CONTEXTS=1` to reproduce the legacy sequential path for a runtime/equivalence check.
+Each result reports `unique_contexts`, `batched_contexts`, `sequential_contexts`, `context_batches`,
+and `used_batched_inference`, while `prediction_seconds` still measures the complete TabPFN stage.
 
 The input-size check is independent of GPU count. If an intentionally pinned model still reports a
 pretraining-limit error, it can be overridden explicitly:
@@ -340,8 +371,9 @@ scripts/run_full.sh 6
 `IGNORE_PRETRAINING_LIMITS=1` only disables the guard. It does not make the model pretrained for that
 data scale, reduce memory use, or guarantee valid benchmark quality. Record this setting separately
 from runs that stay within the active checkpoint's limits. The same `DEVICES`, `FIT_MODE`,
-`N_ESTIMATORS`, and `IGNORE_PRETRAINING_LIMITS` variables are supported by the random, kNN, TabPFN
-v1, and LoCalPFN scripts.
+`N_ESTIMATORS`, `MODEL_VERSION`, `CONTEXT_BATCH_SIZE`, `DISABLE_BATCHED_CONTEXTS`, and
+`IGNORE_PRETRAINING_LIMITS` variables are supported by the random, kNN, TabPFN v1, and LoCalPFN
+scripts.
 
 In particular, OpenML dataset ID 6 is `letter`: it has 20,000 rows and 26 target classes. The default
 80/10/10 runner therefore sends 16,000 training rows to TabPFN, which explains the reported error.
@@ -365,9 +397,9 @@ The repository includes two paper-oriented benchmark sources:
   TabZilla train/validation/test folds are used without resplitting.
 
 Here “TabPFN v1” names the v1 paper's **dataset and split benchmark**. Prediction still uses the
-`TabPFNClassifier` supplied by the installed `tabpfn` 2.x package, so the resulting numbers are not
-intended to reproduce the historical v1 checkpoint exactly. The model package/checkpoint version
-should be recorded alongside final results.
+`TabPFNClassifier` implementation from package version 8.2.0 with the v2.6 classifier checkpoint, so
+the resulting numbers are not intended to reproduce the historical v1 checkpoint exactly. Both the
+library and checkpoint version are recorded alongside final results.
 
 The LoCalPFN paper text states 47 small plus 48 medium/large datasets (95 total), while the dataset
 rows visible in its appendix tables do not enumerate all 95. For this reason, benchmark membership
@@ -454,9 +486,10 @@ invocation appends one JSON object per fold and uses `--resume`; completed confi
 after interruption. Errors, including an out-of-memory full-context run, remain in the JSONL result
 with their exception type and message.
 
-For four GPUs, launch disjoint `DATASET_IDS` shards with `DEVICE=cuda:0` through `cuda:3`, or expose
-one physical GPU per process with `CUDA_VISIBLE_DEVICES` and use `DEVICE=cuda:0`. A single benchmark
-process does not automatically distribute query-specific contexts across GPUs.
+For four GPUs, one process can use `DEVICES="cuda:0 cuda:1 cuda:2 cuda:3"`: batched context inference
+fuses compatible query contexts, while TabPFN distributes ensemble estimators across the devices.
+Dataset-level sharding into four single-GPU processes remains an alternative when independent jobs
+provide better cluster utilization.
 
 Summarize any number of result files into fold-level, dataset-level, error, and average-rank tables:
 
@@ -467,9 +500,9 @@ python scripts/summarize_benchmark.py \
   --output-dir outputs/summary
 ```
 
-The kNN adapter currently performs a separate frozen TabPFN context fit for each unique retrieved
-context. This matches the intended query-specific evaluation but is expensive, especially across 10
-LoCalPFN folds. Start with the smoke commands and estimate runtime before launching all datasets.
+The kNN adapter uses bounded fused context batches on TabPFN 8.2 and falls back to an independent
+frozen context fit only when batching is disabled, unavailable, or unnecessary for a single shared
+context. Start with the smoke commands and estimate runtime before launching all datasets.
 
 ## Implementation roadmap
 
