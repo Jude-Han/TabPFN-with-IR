@@ -251,7 +251,13 @@ python scripts/run_baseline.py \
 
 `CONTEXT_RATIO` takes precedence over `CONTEXT_SIZE` and must satisfy `0 < ratio <= 1`.
 
-kNN context-size selection on the validation split:
+One kNN run with a fixed context size on the final test split:
+
+```bash
+CONTEXT_SIZE=128 scripts/run_knn.sh 31 class
+```
+
+kNN context-size selection over several values on the validation split:
 
 ```bash
 K_VALUES="32 64 128 256 512 1000 localpfn" scripts/run_knn_sweep.sh 31 class
@@ -267,7 +273,7 @@ memory and inference cost. Then run the selected budget once on the test split f
 random retrieval:
 
 ```bash
-K_VALUES="128" EVALUATION_SPLIT=test scripts/run_knn_sweep.sh 31 class
+CONTEXT_SIZE=128 EVALUATION_SPLIT=test scripts/run_knn.sh 31 class
 CONTEXT_SIZE=128 EVALUATION_SPLIT=test scripts/run_random.sh 31 class
 ```
 
@@ -345,9 +351,9 @@ FIT_MODE=fit_preprocessors \
 N_ESTIMATORS=8 \
 MODEL_VERSION=v2.6 \
 CONTEXT_BATCH_SIZE=32 \
-K_VALUES="128" \
+CONTEXT_SIZE=128 \
 EVALUATION_SPLIT=test \
-scripts/run_knn_sweep.sh 31 class
+scripts/run_knn.sh 31 class
 ```
 
 Start with `CONTEXT_BATCH_SIZE=32` on four RTX 3090 GPUs. Try `64` if memory headroom remains and GPU
