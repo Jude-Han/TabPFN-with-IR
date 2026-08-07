@@ -12,9 +12,11 @@ random_ratios="${RANDOM_RATIOS:-}"
 output="${OUTPUT:-${repository_dir}/outputs/tabpfn-v1/results.jsonl}"
 model_version="${MODEL_VERSION:-v2.6}"
 context_batch_size="${CONTEXT_BATCH_SIZE:-32}"
+inference_profile="${INFERENCE_PROFILE:-single-estimator}"
 extra_args=(
   --model-version "${model_version}"
   --context-batch-size "${context_batch_size}"
+  --inference-profile "${inference_profile}"
 )
 
 if [[ -n "${DEVICES:-}" ]]; then
@@ -27,7 +29,10 @@ fi
 if [[ -n "${FIT_MODE:-}" ]]; then
   extra_args+=(--fit-mode "${FIT_MODE}")
 fi
-if [[ -n "${N_ESTIMATORS:-}" ]]; then
+if [[ "${inference_profile}" == "single-estimator" ]]; then
+  # This benchmark profile intentionally takes precedence over a global shell value.
+  extra_args+=(--n-estimators 1)
+elif [[ -n "${N_ESTIMATORS:-}" ]]; then
   extra_args+=(--n-estimators "${N_ESTIMATORS}")
 fi
 if [[ "${DISABLE_BATCHED_CONTEXTS:-0}" == "1" ]]; then

@@ -22,7 +22,12 @@ from tabpfn_ir.data import (
 )
 from tabpfn_ir.evaluation import run_retrieval_experiment
 from tabpfn_ir.environment import load_project_dotenv
-from tabpfn_ir.models import ContextualTabPFNClassifier, build_tabpfn_classifier_kwargs
+from tabpfn_ir.models import (
+    TABPFN_INFERENCE_PROFILES,
+    ContextualTabPFNClassifier,
+    build_tabpfn_classifier_kwargs,
+    resolve_n_estimators,
+)
 from tabpfn_ir.retrieval import (
     FullContextRetriever,
     KNNRetriever,
@@ -101,6 +106,15 @@ def parse_args() -> argparse.Namespace:
         default="fit_preprocessors",
     )
     parser.add_argument("--n-estimators", type=int)
+    parser.add_argument(
+        "--inference-profile",
+        choices=sorted(TABPFN_INFERENCE_PROFILES),
+        default="default",
+        help=(
+            "Use 'single-estimator' for paper-like evaluation. This profile forces "
+            "n_estimators=1 even if another value is supplied."
+        ),
+    )
     parser.add_argument(
         "--model-version",
         choices=["v2.6"],
@@ -414,6 +428,10 @@ def run_fold(fold_input: FoldInput, args: argparse.Namespace) -> dict[str, objec
 def main() -> None:
     load_project_dotenv(REPOSITORY_ROOT / ".env", override=False)
     args = parse_args()
+    args.n_estimators = resolve_n_estimators(
+        inference_profile=args.inference_profile,
+        n_estimators=args.n_estimators,
+    )
     if args.limit is not None and args.limit <= 0:
         raise ValueError("--limit must be positive.")
     if args.context_batch_size <= 0:
@@ -431,6 +449,7 @@ def main() -> None:
     )
     tabpfn_configuration = {
         **tabpfn_kwargs,
+        "inference_profile": args.inference_profile,
         "model_version": args.model_version,
         "context_batch_size": args.context_batch_size,
         "batched_contexts": not args.disable_batched_contexts,

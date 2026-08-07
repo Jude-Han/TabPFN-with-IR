@@ -7,6 +7,27 @@ from typing import Any
 
 
 MULTI_GPU_FIT_MODES = frozenset({"fit_preprocessors", "low_memory"})
+TABPFN_INFERENCE_PROFILES = frozenset({"default", "single-estimator"})
+
+
+def resolve_n_estimators(
+    *,
+    inference_profile: str,
+    n_estimators: int | None,
+) -> int | None:
+    """Resolve ensemble size, allowing explicit profiles to override the environment.
+
+    The single-estimator profile is intended for paper-like benchmark runs. It is
+    deliberately authoritative so a shell-level ``N_ESTIMATORS`` value cannot
+    silently turn the run back into an ensemble.
+    """
+
+    if inference_profile not in TABPFN_INFERENCE_PROFILES:
+        choices = ", ".join(sorted(TABPFN_INFERENCE_PROFILES))
+        raise ValueError(f"Unknown inference profile {inference_profile!r}; use {choices}.")
+    if inference_profile == "single-estimator":
+        return 1
+    return n_estimators
 
 
 def build_tabpfn_classifier_kwargs(

@@ -379,7 +379,8 @@ data scale, reduce memory use, or guarantee valid benchmark quality. Record this
 from runs that stay within the active checkpoint's limits. The same `DEVICES`, `FIT_MODE`,
 `N_ESTIMATORS`, `MODEL_VERSION`, `CONTEXT_BATCH_SIZE`, `DISABLE_BATCHED_CONTEXTS`, and
 `IGNORE_PRETRAINING_LIMITS` variables are supported by the random, kNN, TabPFN v1, and LoCalPFN
-scripts.
+scripts. The TabPFN-v1 benchmark wrapper is the exception to the normal `N_ESTIMATORS` precedence:
+its default `INFERENCE_PROFILE=single-estimator` forces one estimator for paper-like evaluation.
 
 In particular, OpenML dataset ID 6 is `letter`: it has 20,000 rows and 26 target classes. The default
 80/10/10 runner therefore sends 16,000 training rows to TabPFN, which explains the reported error.
@@ -406,6 +407,13 @@ Here “TabPFN v1” names the v1 paper's **dataset and split benchmark**. Predi
 `TabPFNClassifier` implementation from package version 8.2.0 with the v2.6 classifier checkpoint, so
 the resulting numbers are not intended to reproduce the historical v1 checkpoint exactly. Both the
 library and checkpoint version are recorded alongside final results.
+
+`scripts/run_tabpfn_v1_benchmark.sh` defaults to the explicit
+`INFERENCE_PROFILE=single-estimator` profile. It sets `n_estimators=1` for full, random, and kNN runs,
+even when a login shell exports another value such as `N_ESTIMATORS=8`. The resolved value and profile
+are stored in every JSONL record and are part of the resume key. To intentionally run a modern
+ensemble comparison instead, use `INFERENCE_PROFILE=default N_ESTIMATORS=8`; keep those results
+separate from the single-estimator benchmark.
 
 The LoCalPFN paper text states 47 small plus 48 medium/large datasets (95 total), while the dataset
 rows visible in its appendix tables do not enumerate all 95. For this reason, benchmark membership
@@ -479,7 +487,7 @@ GPU_IDS="0 1 2 3" \
 BENCHMARKS="tabpfn-v1" \
 METHODS="full random knn" \
 K_VALUES="128 256 512 1000 localpfn" \
-N_ESTIMATORS=8 \
+INFERENCE_PROFILE=single-estimator \
 CONTEXT_BATCH_SIZE=32 \
 MODEL_VERSION=v2.6 \
 scripts/run_complete_benchmarks.sh
@@ -495,10 +503,12 @@ GPU_IDS="0 1 2 3" \
 BENCHMARKS="tabpfn-v1 localpfn" \
 METHODS="full random knn" \
 K_VALUES="128 256 512 1000 localpfn" \
-N_ESTIMATORS=8 \
 CONTEXT_BATCH_SIZE=32 \
 scripts/run_complete_benchmarks.sh
 ```
+
+In the combined command, the TabPFN-v1 wrapper still forces one estimator by default. The LoCalPFN
+wrapper retains its normal behavior and reads `N_ESTIMATORS` when that variable is defined.
 
 With `PARALLEL_SHARDS=4`, dataset identifiers are assigned round-robin to four
 independent processes, each pinned to one GPU. Every shard writes its own resumable
