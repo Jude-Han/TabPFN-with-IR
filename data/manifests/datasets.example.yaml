@@ -1,0 +1,17 @@
+# Replace these example IDs with the versioned union of OpenML-CC18 and
+# LoCalPFN/TabZilla datasets. Keep exclusion reasons in this file as well.
+datasets:
+  - openml_dataset_id: 31
+    openml_version: 1
+    name: credit-g
+    target: class
+    enabled: true
+    source: openml-cc18
+
+  - openml_dataset_id: 1590
+    openml_version: 1
+    name: adult
+    target: class
+    enabled: false
+    source: openml-cc18
+    exclusion_reason: Example disabled entry; validate the target and version first.

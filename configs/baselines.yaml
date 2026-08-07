@@ -1,0 +1,28 @@
+experiment:
+  seed: 42
+  test_size: 0.10
+  validation_size: 0.10
+
+context:
+  fixed_budgets: [32, 64, 128, 256, 512, 1000]
+  evaluate_localpfn_heuristic: true
+
+retrievers:
+  full:
+    enabled: true
+  random:
+    enabled: true
+    global_context: true
+    repetitions: 5
+  knn:
+    enabled: true
+    metric: euclidean
+    algorithm: brute
+
+model:
+  device: auto
+  tabpfn_kwargs: {}
+
+evaluation:
+  primary_metrics: [roc_auc, log_loss]
+  secondary_metrics: [accuracy, balanced_accuracy]

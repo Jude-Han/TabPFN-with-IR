@@ -153,10 +153,10 @@ In addition to predictive performance, the benchmark will record:
 ```text
 configs/                 Experiment and dataset configurations
 data/manifests/          Versioned OpenML IDs and dataset metadata
-src/data/                Downloading, splitting, and preprocessing
-src/retrieval/           Full, random, kNN, and learned retrievers
-src/models/              Frozen TabPFN prediction adapter
-src/evaluation/          Metrics, aggregation, and statistical tests
+src/tabpfn_ir/data/      Downloading, splitting, and preprocessing
+src/tabpfn_ir/retrieval/ Full, random, and kNN retrievers
+src/tabpfn_ir/models/    Frozen TabPFN prediction adapter
+src/tabpfn_ir/evaluation/ Metrics and one-fold experiment runner
 scripts/                 Benchmark entry points
 tests/                   Leakage, determinism, and retriever tests
 outputs/                 Local experiment artifacts (not committed)
@@ -173,6 +173,33 @@ class Retriever:
         """Return training-row indices and scores with shape [n_query, k]."""
         ...
 ```
+
+## Quick start
+
+Use Python 3.10-3.12 for the benchmark environment because the TabPFN/PyTorch stack may not yet
+support newer Python releases.
+
+```bash
+python3.12 -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[benchmark,dev]"
+pytest
+```
+
+Run one baseline on an OpenML dataset:
+
+```bash
+python scripts/run_baseline.py \
+  --dataset-id 31 \
+  --target class \
+  --method knn \
+  --k 128 \
+  --output outputs/credit-g-knn-k128.json
+```
+
+Choose `full`, `random`, or `knn` with `--method`. Full-context inference uses all training rows.
+The initial runner executes one fixed split; manifest-wide sweeps over folds, context budgets, and
+random repetitions will be added on top of the same components.
 
 ## Implementation roadmap
 
