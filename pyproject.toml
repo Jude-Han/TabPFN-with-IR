@@ -9,6 +9,7 @@ description = "Row retrieval baselines for TabPFN-style in-context tabular model
 readme = "README.md"
 requires-python = ">=3.10,<3.13"
 dependencies = [
+    "faiss-cpu>=1.8,<2",
     "numpy>=1.26,<3",
     "pandas>=2.0,<3",
     "scikit-learn>=1.4,<2",

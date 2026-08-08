@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the TabPFN v1 or LoCalPFN paper benchmark with one retrieval method."""
+"""Run an OpenML/TabZilla paper benchmark with one retrieval method."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from tabpfn_ir.data import (
     load_openml_dataset,
     load_openml_manifest,
     load_tabzilla_dataset,
+    localpfn_split_indices,
     tabpfn_v1_split_indices,
 )
 from tabpfn_ir.evaluation import run_retrieval_experiment
@@ -39,6 +40,7 @@ from tabpfn_ir.retrieval import (
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_V1_MANIFEST = REPOSITORY_ROOT / "data/manifests/tabpfn_v1_30.json"
+DEFAULT_CC18_MANIFEST = REPOSITORY_ROOT / "data/manifests/openml_cc18.json"
 
 
 @dataclass(frozen=True)
@@ -48,6 +50,7 @@ class FoldInput:
     benchmark: str
     dataset_name: str
     dataset_key: str
+    task_id: int | None
     dataset_id: int | None
     dataset_version: int | None
     target: str | None
@@ -55,6 +58,8 @@ class FoldInput:
     y: np.ndarray
     categorical_columns: tuple[str, ...]
     fold: int
+    split_protocol: str
+    split_seed: int | None
     train: np.ndarray
     validation: np.ndarray
     test: np.ndarray
@@ -64,7 +69,7 @@ def software_versions() -> dict[str, str | None]:
     """Record the installed predictor/runtime versions without importing CUDA."""
 
     versions: dict[str, str | None] = {}
-    for package in ("tabpfn-ir", "tabpfn", "torch", "scikit-learn"):
+    for package in ("tabpfn-ir", "tabpfn", "torch", "scikit-learn", "faiss-cpu"):
         try:
             versions[package] = version(package)
         except PackageNotFoundError:
@@ -76,7 +81,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "--benchmark",
-        choices=["tabpfn-v1", "localpfn"],
+        choices=["tabpfn-v1", "openml-cc18", "localpfn"],
         required=True,
     )
     parser.add_argument("--method", choices=["full", "random", "knn"], required=True)
@@ -84,6 +89,12 @@ def parse_args() -> argparse.Namespace:
         "--k",
         default="localpfn",
         help="Positive context size or 'localpfn'; ignored by the full method.",
+    )
+    parser.add_argument(
+        "--maximum-context-size",
+        type=int,
+        default=1000,
+        help="Upper bound in the LoCalPFN dynamic-k formula.",
     )
     parser.add_argument(
         "--random-ratio",
@@ -134,10 +145,16 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=0,
+        help="Random state for OpenML-CC18's LoCalPFN-style folds.",
+    )
+    parser.add_argument(
         "--evaluation-split",
         choices=["validation", "test"],
         default="test",
-        help="LoCalPFN can use validation for selection; TabPFN v1 defines test only.",
+        help="Use validation for selection and test for final reporting when available.",
     )
     parser.add_argument(
         "--folds",
@@ -157,7 +174,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         help="Deterministically subsample each test fold for smoke tests.",
     )
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_V1_MANIFEST)
+    parser.add_argument(
+        "--manifest",
+        type=Path,
+        help="Override the built-in manifest for an OpenML-backed benchmark.",
+    )
     parser.add_argument(
         "--tabzilla-root",
         type=Path,
@@ -185,7 +206,7 @@ def build_retriever(method: str, seed: int):
         return FullContextRetriever()
     if method == "random":
         return RandomRetriever(seed=seed, global_context=True)
-    return KNNRetriever(metric="euclidean", algorithm="brute")
+    return KNNRetriever()
 
 
 def _selected_fold_numbers(requested: list[int] | None, available: int) -> list[int]:
@@ -213,7 +234,7 @@ def _matches_filters(
 def iter_tabpfn_v1_folds(args: argparse.Namespace) -> Iterable[FoldInput]:
     if args.evaluation_split != "test":
         raise ValueError("The reconstructed TabPFN v1 protocol has no validation split.")
-    manifest = load_openml_manifest(args.manifest)
+    manifest = load_openml_manifest(args.manifest or DEFAULT_V1_MANIFEST)
     selected = [
         entry
         for entry in manifest.datasets
@@ -242,6 +263,7 @@ def iter_tabpfn_v1_folds(args: argparse.Namespace) -> Iterable[FoldInput]:
                 benchmark=manifest.benchmark,
                 dataset_name=dataset.name,
                 dataset_key=str(dataset.dataset_id),
+                task_id=entry.task_id,
                 dataset_id=dataset.dataset_id,
                 dataset_version=dataset.version,
                 target=dataset.target_name,
@@ -249,6 +271,60 @@ def iter_tabpfn_v1_folds(args: argparse.Namespace) -> Iterable[FoldInput]:
                 y=dataset.y,
                 categorical_columns=dataset.categorical_columns,
                 fold=fold,
+                split_protocol="tabpfn-v1-stratified-50:50",
+                split_seed=args.seed,
+                train=split.train,
+                validation=split.validation,
+                test=split.test,
+            )
+
+
+def iter_openml_cc18_folds(args: argparse.Namespace) -> Iterable[FoldInput]:
+    """Yield the fixed CC18 tasks with TabZilla/LoCalPFN's 10-fold 8:1:1 splits."""
+
+    manifest = load_openml_manifest(args.manifest or DEFAULT_CC18_MANIFEST)
+    selected = [
+        entry
+        for entry in manifest.datasets
+        if _matches_filters(
+            dataset_id=entry.dataset_id,
+            names=(entry.name,),
+            requested_ids=args.dataset_ids,
+            requested_names=args.dataset_names,
+        )
+    ]
+    if args.limit is not None:
+        selected = selected[: args.limit]
+    if not selected:
+        raise ValueError("No OpenML-CC18 datasets matched the requested filters.")
+
+    for entry in selected:
+        dataset = load_openml_dataset(
+            entry.dataset_id,
+            version=entry.version,
+            target=entry.target,
+        )
+        splits = localpfn_split_indices(
+            dataset.y,
+            n_splits=10,
+            random_state=args.split_seed,
+        )
+        for fold in _selected_fold_numbers(args.folds, len(splits)):
+            split = splits[fold]
+            yield FoldInput(
+                benchmark=manifest.benchmark,
+                dataset_name=dataset.name,
+                dataset_key=str(dataset.dataset_id),
+                task_id=entry.task_id,
+                dataset_id=dataset.dataset_id,
+                dataset_version=dataset.version,
+                target=dataset.target_name,
+                X=dataset.X,
+                y=dataset.y,
+                categorical_columns=dataset.categorical_columns,
+                fold=fold,
+                split_protocol="localpfn-stratified-8:1:1",
+                split_seed=args.split_seed,
                 train=split.train,
                 validation=split.validation,
                 test=split.test,
@@ -298,6 +374,7 @@ def iter_localpfn_folds(args: argparse.Namespace) -> Iterable[FoldInput]:
                 benchmark="localpfn-tabzilla",
                 dataset_name=dataset.name,
                 dataset_key=dataset.directory_name,
+                task_id=dataset.task_id,
                 dataset_id=dataset.task_id,
                 dataset_version=None,
                 target=None,
@@ -305,6 +382,8 @@ def iter_localpfn_folds(args: argparse.Namespace) -> Iterable[FoldInput]:
                 y=dataset.y,
                 categorical_columns=dataset.categorical_columns,
                 fold=fold,
+                split_protocol="tabzilla-stored-8:1:1",
+                split_seed=None,
                 train=split.train,
                 validation=split.validation,
                 test=split.test,
@@ -345,9 +424,12 @@ def _result_key(record: dict[str, object]) -> tuple[object, ...]:
         record.get("benchmark"),
         record.get("dataset_key"),
         record.get("fold"),
+        record.get("split_protocol"),
+        record.get("split_seed"),
         record.get("evaluation_split"),
         record.get("method"),
         record.get("context_specification"),
+        record.get("maximum_context_size"),
         record.get("seed"),
         json.dumps(record.get("tabpfn_configuration"), sort_keys=True),
         tabpfn_version,
@@ -396,7 +478,11 @@ def run_fold(fold_input: FoldInput, args: argparse.Namespace) -> dict[str, objec
             train_views.model.shape[0],
         )
     else:
-        context_size = resolve_context_specification(args.k, train_views.model.shape[0])
+        context_size = resolve_context_specification(
+            args.k,
+            train_views.model.shape[0],
+            maximum=args.maximum_context_size,
+        )
     retrieval_seed = args.seed + fold_input.fold
     tabpfn_kwargs = build_tabpfn_classifier_kwargs(
         device=args.device,
@@ -436,6 +522,8 @@ def main() -> None:
         raise ValueError("--limit must be positive.")
     if args.context_batch_size <= 0:
         raise ValueError("--context-batch-size must be positive.")
+    if args.maximum_context_size <= 0:
+        raise ValueError("--maximum-context-size must be positive.")
     if args.random_ratio is not None:
         if args.method != "random":
             raise ValueError("--random-ratio can only be used with --method random.")
@@ -457,21 +545,25 @@ def main() -> None:
     args.output.parent.mkdir(parents=True, exist_ok=True)
     completed = _completed_keys(args.output) if args.resume else set()
     versions = software_versions()
-    fold_iterator = (
-        iter_tabpfn_v1_folds(args)
-        if args.benchmark == "tabpfn-v1"
-        else iter_localpfn_folds(args)
-    )
+    if args.benchmark == "tabpfn-v1":
+        fold_iterator = iter_tabpfn_v1_folds(args)
+    elif args.benchmark == "openml-cc18":
+        fold_iterator = iter_openml_cc18_folds(args)
+    else:
+        fold_iterator = iter_localpfn_folds(args)
 
     for fold_input in fold_iterator:
         base_record: dict[str, object] = {
             "benchmark": fold_input.benchmark,
             "dataset_key": fold_input.dataset_key,
+            "task_id": fold_input.task_id,
             "dataset_id": fold_input.dataset_id,
             "dataset_version": fold_input.dataset_version,
             "dataset_name": fold_input.dataset_name,
             "target": fold_input.target,
             "fold": fold_input.fold,
+            "split_protocol": fold_input.split_protocol,
+            "split_seed": fold_input.split_seed,
             "evaluation_split": args.evaluation_split,
             "method": args.method,
             "context_specification": (
@@ -484,6 +576,11 @@ def main() -> None:
                 )
             ),
             "random_ratio": args.random_ratio,
+            "maximum_context_size": (
+                args.maximum_context_size
+                if args.method != "full" and args.random_ratio is None
+                else None
+            ),
             "seed": args.seed,
             "device": tabpfn_kwargs["device"],
             "tabpfn_configuration": tabpfn_configuration,

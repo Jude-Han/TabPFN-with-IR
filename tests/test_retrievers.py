@@ -36,9 +36,12 @@ def test_random_global_context_is_shared_and_reproducible(training_data):
 
 def test_knn_returns_query_specific_nearest_rows(training_data):
     X, y = training_data
-    result = KNNRetriever().fit(X, y).retrieve(np.asarray([[0.2], [8.0]]), 2)
+    retriever = KNNRetriever(query_batch_size=1).fit(X, y)
+    result = retriever.retrieve(np.asarray([[0.2], [8.0]], dtype=np.float64), 2)
     np.testing.assert_array_equal(result.indices[0], [0, 1])
     np.testing.assert_array_equal(result.indices[1], [3, 2])
+    assert type(retriever._index).__name__ == "IndexFlatL2"
+    np.testing.assert_allclose(result.scores[0], [-0.04, -0.64], atol=1e-6)
     assert np.all(result.scores <= 0)
 
 
@@ -49,7 +52,7 @@ def test_context_budget_is_capped_at_training_size(training_data):
 
 
 def test_localpfn_context_size_implements_paper_heuristic():
-    assert localpfn_context_size(25) == 25
+    assert localpfn_context_size(25) == 50
     assert localpfn_context_size(10_000) == 1000
     assert localpfn_context_size(1_000_000) == 1000
 

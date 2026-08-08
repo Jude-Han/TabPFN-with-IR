@@ -7,6 +7,8 @@ dataset by name alone because names can be duplicated or point to different Open
 Split indices produced for an experiment should be stored separately from the manifest and keyed by
 dataset ID, version, fold, and seed.
 
-`tabpfn_v1_30.json` is the fixed Table 7 list. LoCalPFN membership is intentionally not duplicated
-as a static manifest: `scripts/run_benchmark.py` applies the public LoCalPFN filters to the official
-TabZilla metadata and consumes the stored TabZilla folds.
+`tabpfn_v1_30.json` is the fixed Table 7 list. `openml_cc18.json` fixes the 72 tasks in OpenML suite
+99 together with their targets and row counts; the runner applies TabZilla/LoCalPFN's deterministic
+10-fold 80/10/10 construction. LoCalPFN membership is intentionally not duplicated as a static
+manifest: `scripts/run_benchmark.py` applies the public LoCalPFN filters to the official TabZilla
+metadata and consumes the stored TabZilla folds.

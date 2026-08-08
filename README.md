@@ -43,16 +43,19 @@ identifies the `credit-g` dataset. A dataset ID resolves to a particular uploade
 optional `--dataset-version` argument is therefore used as a validation check rather than to select a
 different version behind the same ID.
 
-OpenML-CC18 is benchmark suite `99`. After installing the benchmark dependencies, list its task IDs,
-dataset IDs, versions, targets, and names with:
+OpenML-CC18 is benchmark suite `99`. Its 72 fixed tasks are recorded in
+`data/manifests/openml_cc18.json`. List task IDs, dataset IDs, versions, targets, and the exact
+test-query count of every LoCalPFN-style fold without downloading the datasets:
 
 ```bash
 python scripts/list_openml_cc18.py
 ```
 
-CC18 task IDs describe benchmark tasks and predefined evaluation settings. The current runner uses
-the associated dataset ID and creates its own deterministic 80/10/10 split; it does not yet reproduce
-the official OpenML task folds.
+CC18 task IDs describe benchmark tasks and predefined evaluation settings. The `openml-cc18` runner
+uses each task's dataset and target, then reproduces TabZilla/LoCalPFN's split construction:
+`StratifiedKFold(n_splits=10, shuffle=True, random_state=0)`, with fold `i` as test, fold `i+1` as
+validation, and the remaining eight folds as training data. These are intentionally not OpenML's
+official 90/10 task folds.
 
 Each fold should maintain two aligned views of its rows:
 
@@ -231,7 +234,7 @@ Full-context TabPFN on the final test split:
 scripts/run_full.sh 31 class
 ```
 
-Random retrieval with the same context budget over five retrieval/split seeds:
+Random retrieval with the same context budget over five retrieval seeds (all on split seed 0):
 
 ```bash
 CONTEXT_SIZE=128 RANDOM_SEEDS="0 1 2 3 4" scripts/run_random.sh 31 class
@@ -251,10 +254,10 @@ python scripts/run_baseline.py \
 
 `CONTEXT_RATIO` takes precedence over `CONTEXT_SIZE` and must satisfy `0 < ratio <= 1`.
 
-One kNN run with a fixed context size on the final test split:
+One FAISS exact-L2 kNN run with the paper's dynamic context size on fold 0's test split:
 
 ```bash
-CONTEXT_SIZE=128 scripts/run_knn.sh 31 class
+scripts/run_knn.sh 31 class
 ```
 
 kNN context-size selection over several values on the validation split:
@@ -263,8 +266,9 @@ kNN context-size selection over several values on the validation split:
 K_VALUES="32 64 128 256 512 1000 localpfn" scripts/run_knn_sweep.sh 31 class
 ```
 
-`localpfn` resolves to `min(10 * sqrt(n_train), 1000)`. Requested values larger than the training
-fold are automatically capped at `n_train`.
+`localpfn` resolves to `min(int(10 * sqrt(n_train)), MAXIMUM_CONTEXT_SIZE)`, where the default
+maximum is `1000`. A budget larger than the training fold is capped at `n_train`. Retrieval uses
+`faiss.IndexFlatL2` and processes query searches in batches of 512.
 
 Select `k` using validation results only, with one metric chosen before looking at the test set. ROC
 AUC is the recommended selection metric for consistency with the main benchmark; use log loss when
@@ -277,8 +281,8 @@ CONTEXT_SIZE=128 EVALUATION_SPLIT=test scripts/run_knn.sh 31 class
 CONTEXT_SIZE=128 EVALUATION_SPLIT=test scripts/run_random.sh 31 class
 ```
 
-The environment variables `EXPERIMENT_SEED`, `DATASET_VERSION`, `PYTHON_COMMAND`, and
-`OUTPUT_DIR` can be used to override the remaining defaults.
+The environment variables `FOLD`, `SPLIT_SEED`, `MAXIMUM_CONTEXT_SIZE`, `EXPERIMENT_SEED`,
+`DATASET_VERSION`, `PYTHON_COMMAND`, and `OUTPUT_DIR` can override the remaining defaults.
 
 ### Multi-GPU TabPFN inference
 
@@ -392,12 +396,16 @@ into the three current retrieval baselines without being reported separately.
 
 ## Paper benchmark runners
 
-The repository includes two paper-oriented benchmark sources:
+The repository includes three paper-oriented benchmark sources:
 
 - **TabPFN v1:** the fixed 30 OpenML dataset IDs in Table 7, stored in
   `data/manifests/tabpfn_v1_30.json`. The runner creates five deterministic stratified 50/50
   train/test splits and reports macro OVO ROC AUC. The paper did not publish its exact random split
   seeds, so these are protocol-compatible reconstructed splits, not the authors' original indices.
+- **OpenML-CC18 with LoCalPFN splits:** all 72 tasks in suite 99, fixed in
+  `data/manifests/openml_cc18.json`, with the exact TabZilla 10-fold 80/10/10 construction. Passing
+  `data/manifests/tabpfn_v1_30.json` as `--manifest` applies the same split protocol only to the
+  TabPFN-v1 paper's 30-dataset subset.
 - **LoCalPFN:** the classification datasets discovered from a locally preprocessed TabZilla copy,
   using the filters in the public LoCalPFN code: at most 100 features and 10 classes, no regression,
   and exclusion of the four named datasets known to contain missing values. The original stored ten
@@ -449,6 +457,16 @@ python scripts/run_benchmark.py \
   --output outputs/smoke-v1.jsonl
 
 python scripts/run_benchmark.py \
+  --benchmark openml-cc18 \
+  --manifest data/manifests/tabpfn_v1_30.json \
+  --dataset-ids 31 \
+  --folds 0 \
+  --method knn \
+  --k localpfn \
+  --device cuda:0 \
+  --output outputs/smoke-cc18-localpfn-split.jsonl
+
+python scripts/run_benchmark.py \
   --benchmark localpfn \
   --tabzilla-root /path/to/tabzilla/TabZilla/datasets \
   --limit 1 \
@@ -461,8 +479,24 @@ python scripts/run_benchmark.py \
 ```
 
 `--max-query-samples N` is available for an even smaller inference smoke test. It must not be used
-for final paper numbers. `--dataset-ids` means OpenML **dataset IDs** for TabPFN v1, but OpenML
-**task IDs** parsed from TabZilla directory names for LoCalPFN.
+for final paper numbers. `--dataset-ids` means OpenML **dataset IDs** for the two manifest-backed
+benchmarks, but OpenML **task IDs** parsed from TabZilla directory names for LoCalPFN.
+
+The complete 72-dataset, 10-fold CC18 run evaluates 874,726 test queries in total; the TabPFN-v1
+30-dataset subset evaluates 32,741. Per-dataset and per-fold counts, plus aggregate fold totals, are
+printed with:
+
+```bash
+python scripts/list_openml_cc18.py
+
+# The TabPFN-v1 30-dataset subset under the same LoCalPFN split protocol
+python scripts/list_openml_cc18.py --manifest data/manifests/tabpfn_v1_30.json
+```
+
+The full 72-task suite also contains datasets outside the pinned TabPFN-v2.6 architectural limits,
+including tasks with more than 10 classes or more than 100 features. Use the 30-dataset manifest for
+the directly compatible TabPFN paper subset; the full-suite runner keeps incompatible outcomes as
+explicit error records instead of silently dropping tasks.
 
 ### Complete three-baseline sweeps
 
@@ -472,6 +506,13 @@ through `K_VALUES`:
 
 ```bash
 DEVICE=cuda:0 K_VALUES="128 256 512 1000 localpfn" \
+  scripts/run_tabpfn_v1_benchmark.sh
+
+BENCHMARK=openml-cc18 \
+MANIFEST=data/manifests/tabpfn_v1_30.json \
+METHODS=knn \
+K_VALUES=localpfn \
+DEVICE=cuda:0 \
   scripts/run_tabpfn_v1_benchmark.sh
 
 DEVICE=cuda:0 K_VALUES="128 256 512 1000 localpfn" \
@@ -493,14 +534,14 @@ MODEL_VERSION=v2.6 \
 scripts/run_complete_benchmarks.sh
 ```
 
-Run both the TabPFN-v1 and LoCalPFN benchmark suites by also supplying the
+Run OpenML-CC18 together with the TabPFN-v1 and LoCalPFN suites by also supplying the
 preprocessed TabZilla directory:
 
 ```bash
 TABZILLA_ROOT=/path/to/tabzilla/TabZilla/datasets \
 PARALLEL_SHARDS=4 \
 GPU_IDS="0 1 2 3" \
-BENCHMARKS="tabpfn-v1 localpfn" \
+BENCHMARKS="tabpfn-v1 openml-cc18 localpfn" \
 METHODS="full random knn" \
 K_VALUES="128 256 512 1000 localpfn" \
 CONTEXT_BATCH_SIZE=32 \
@@ -518,8 +559,8 @@ process-level sharding is intentional: TabPFN 8.2's batched context engine uses 
 the first configured device, so one batched kNN process cannot itself spread its
 context batches over four GPUs.
 
-The default complete script runs only `tabpfn-v1`; include `localpfn` in
-`BENCHMARKS` only when `TABZILLA_ROOT` is available. `PARALLEL_SHARDS=1` runs in the
+The default complete script runs only `tabpfn-v1`; add `openml-cc18` as needed, and include
+`localpfn` only when `TABZILLA_ROOT` is available. `PARALLEL_SHARDS=1` runs in the
 foreground without dataset sharding. All underlying benchmark calls use `--resume`,
 so rerunning the same command skips successful configurations already present in the
 same output files.

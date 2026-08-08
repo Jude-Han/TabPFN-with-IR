@@ -3,11 +3,13 @@ import json
 
 import numpy as np
 
+from scripts.list_openml_cc18 import query_fold_sizes
 from scripts.run_benchmark import _subsample_query_indices
 from tabpfn_ir.data import (
     discover_localpfn_dataset_directories,
     load_openml_manifest,
     load_tabzilla_dataset,
+    localpfn_split_indices,
     tabpfn_v1_split_indices,
 )
 
@@ -83,6 +85,49 @@ def test_tabpfn_v1_protocol_builds_five_disjoint_half_splits():
         assert len(split.validation) == 0
         assert not np.intersect1d(split.train, split.test).size
         assert np.array_equal(np.unique(y[split.train], return_counts=True)[1], [10, 10, 10])
+
+
+def test_openml_cc18_manifest_contains_fixed_72_tasks_and_query_counts():
+    manifest = load_openml_manifest("data/manifests/openml_cc18.json")
+
+    assert manifest.benchmark == "openml-cc18-localpfn-splits"
+    assert len(manifest.datasets) == 72
+    assert len({entry.task_id for entry in manifest.datasets}) == 72
+    assert sum(entry.n_instances for entry in manifest.datasets) == 874_726
+    assert query_fold_sizes(625) == (63, 63, 63, 63, 63, 62, 62, 62, 62, 62)
+
+
+def test_localpfn_protocol_uses_adjacent_validation_fold_and_eight_train_folds():
+    y = np.repeat(np.arange(3), 20)
+    splits = localpfn_split_indices(y, random_state=0)
+
+    assert len(splits) == 10
+    np.testing.assert_array_equal(splits[0].validation, splits[1].test)
+    for split in splits:
+        assert len(split.train) == 48
+        assert len(split.validation) == 6
+        assert len(split.test) == 6
+        assert not np.intersect1d(split.train, split.validation).size
+        assert not np.intersect1d(split.train, split.test).size
+        assert not np.intersect1d(split.validation, split.test).size
+    np.testing.assert_array_equal(
+        np.sort(np.concatenate([split.test for split in splits])),
+        np.arange(len(y)),
+    )
+
+
+def test_reported_query_fold_sizes_match_stratified_splitter():
+    y = np.concatenate(
+        [
+            np.repeat(0, 49),
+            np.repeat(1, 288),
+            np.repeat(2, 288),
+        ]
+    )
+
+    actual = tuple(len(split.test) for split in localpfn_split_indices(y, random_state=0))
+
+    assert actual == query_fold_sizes(len(y))
 
 
 def test_load_tabzilla_dataset_preserves_stored_folds_and_categories(tmp_path):

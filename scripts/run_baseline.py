@@ -10,7 +10,7 @@ from pathlib import Path
 from tabpfn_ir.data import (
     TabularPreprocessor,
     load_openml_dataset,
-    stratified_train_validation_test_split,
+    localpfn_split_indices,
 )
 from tabpfn_ir.evaluation import run_retrieval_experiment
 from tabpfn_ir.environment import load_project_dotenv
@@ -35,8 +35,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--method", choices=["full", "random", "knn"], required=True)
     parser.add_argument(
         "--k",
-        default="128",
+        default="localpfn",
         help="Positive context size or 'localpfn' for min(10 * sqrt(n_train), 1000).",
+    )
+    parser.add_argument(
+        "--maximum-context-size",
+        type=int,
+        default=1000,
+        help="Upper bound in the LoCalPFN dynamic-k formula.",
     )
     parser.add_argument(
         "--random-ratio",
@@ -47,6 +53,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--split-seed",
+        type=int,
+        default=0,
+        help="Random state for the TabZilla/LoCalPFN 10-fold split.",
+    )
+    parser.add_argument(
+        "--fold",
+        type=int,
+        default=0,
+        help="LoCalPFN fold to evaluate (0-9).",
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument(
         "--devices",
@@ -92,13 +110,18 @@ def build_retriever(method: str, seed: int):
         return FullContextRetriever()
     if method == "random":
         return RandomRetriever(seed=seed, global_context=True)
-    return KNNRetriever(metric="euclidean", algorithm="brute")
+    return KNNRetriever()
 
 
-def resolve_context_size(specification: str, n_train: int) -> int:
+def resolve_context_size(
+    specification: str,
+    n_train: int,
+    *,
+    maximum: int = 1000,
+) -> int:
     """Backward-compatible wrapper used by existing commands and tests."""
 
-    return resolve_context_specification(specification, n_train)
+    return resolve_context_specification(specification, n_train, maximum=maximum)
 
 
 def main() -> None:
@@ -106,6 +129,10 @@ def main() -> None:
     args = parse_args()
     if args.context_batch_size <= 0:
         raise ValueError("--context-batch-size must be positive.")
+    if args.maximum_context_size <= 0:
+        raise ValueError("--maximum-context-size must be positive.")
+    if args.fold < 0 or args.fold >= 10:
+        raise ValueError("--fold must be in 0..9.")
     if args.random_ratio is not None and args.method != "random":
         raise ValueError("--random-ratio can only be used with --method random.")
     dataset = load_openml_dataset(
@@ -113,7 +140,11 @@ def main() -> None:
         version=args.dataset_version,
         target=args.target,
     )
-    split = stratified_train_validation_test_split(dataset.y, random_state=args.seed)
+    split = localpfn_split_indices(
+        dataset.y,
+        n_splits=10,
+        random_state=args.split_seed,
+    )[args.fold]
     X_train = dataset.X.iloc[split.train]
     y_train = dataset.y[split.train]
     query_indices = split.validation if args.evaluation_split == "validation" else split.test
@@ -148,7 +179,11 @@ def main() -> None:
         )
         context_specification = f"ratio:{args.random_ratio:g}"
     else:
-        context_size = resolve_context_size(args.k, n_train=train_views.model.shape[0])
+        context_size = resolve_context_size(
+            args.k,
+            n_train=train_views.model.shape[0],
+            maximum=args.maximum_context_size,
+        )
         context_specification = args.k
     result = run_retrieval_experiment(
         retriever=retriever,
@@ -170,6 +205,9 @@ def main() -> None:
             "target": dataset.target_name,
         },
         "seed": args.seed,
+        "fold": args.fold,
+        "split_seed": args.split_seed,
+        "split_protocol": "localpfn-stratified-8:1:1",
         "tabpfn_configuration": {
             **tabpfn_kwargs,
             "model_version": args.model_version,
@@ -178,6 +216,11 @@ def main() -> None:
         },
         "evaluation_split": args.evaluation_split,
         "context_specification": context_specification,
+        "maximum_context_size": (
+            args.maximum_context_size
+            if args.method != "full" and args.random_ratio is None
+            else None
+        ),
         "random_ratio": args.random_ratio,
         "result": result.to_dict(),
     }

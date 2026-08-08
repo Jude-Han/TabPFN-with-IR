@@ -15,6 +15,7 @@ gpu_ids_text="${GPU_IDS:-0 1 2 3}"
 device="${DEVICE:-cuda:0}"
 devices="${DEVICES:-}"
 evaluation_split="${EVALUATION_SPLIT:-test}"
+manifest="${MANIFEST:-}"
 
 if ! [[ "${parallel_shards}" =~ ^[1-9][0-9]*$ ]]; then
   echo "PARALLEL_SHARDS must be a positive integer." >&2
@@ -32,8 +33,13 @@ result_files=()
 
 list_dataset_identifiers() {
   local benchmark="$1"
-  if [[ "${benchmark}" == "tabpfn-v1" ]]; then
-    "${python_command}" scripts/list_benchmark_datasets.py --benchmark tabpfn-v1
+  if [[ "${benchmark}" == "tabpfn-v1" || "${benchmark}" == "openml-cc18" ]]; then
+    local manifest_args=()
+    if [[ -n "${manifest}" ]]; then
+      manifest_args+=(--manifest "${manifest}")
+    fi
+    "${python_command}" scripts/list_benchmark_datasets.py \
+      --benchmark "${benchmark}" "${manifest_args[@]}"
   else
     "${python_command}" scripts/list_benchmark_datasets.py \
       --benchmark localpfn --tabzilla-root "${tabzilla_root}"
@@ -46,7 +52,9 @@ run_one_worker() {
   local filter_value="$3"
   local output="$4"
 
-  if [[ "${benchmark}" == "tabpfn-v1" ]]; then
+  if [[ "${benchmark}" == "tabpfn-v1" || "${benchmark}" == "openml-cc18" ]]; then
+    BENCHMARK="${benchmark}" \
+    MANIFEST="${manifest}" \
     DEVICE="${worker_device}" \
     DEVICES="" \
     DATASET_IDS="${filter_value}" \
@@ -79,7 +87,9 @@ run_one_benchmark() {
   if (( parallel_shards == 1 )); then
     local output="${benchmark_output_dir}/results.jsonl"
     result_files+=("${output}")
-    if [[ "${benchmark}" == "tabpfn-v1" ]]; then
+    if [[ "${benchmark}" == "tabpfn-v1" || "${benchmark}" == "openml-cc18" ]]; then
+      BENCHMARK="${benchmark}" \
+      MANIFEST="${manifest}" \
       DEVICE="${device}" \
       DEVICES="${devices}" \
       DATASET_IDS="" \
@@ -168,7 +178,7 @@ echo "Parallel dataset shards: ${parallel_shards}"
 
 for benchmark in ${benchmarks}; do
   case "${benchmark}" in
-    tabpfn-v1)
+    tabpfn-v1|openml-cc18)
       run_one_benchmark "${benchmark}"
       ;;
     localpfn)
@@ -179,7 +189,7 @@ for benchmark in ${benchmarks}; do
       run_one_benchmark "${benchmark}"
       ;;
     *)
-      echo "Unknown benchmark '${benchmark}'; use tabpfn-v1 and/or localpfn." >&2
+      echo "Unknown benchmark '${benchmark}'; use tabpfn-v1, openml-cc18, and/or localpfn." >&2
       exit 2
       ;;
   esac

@@ -9,6 +9,7 @@ from tabpfn_ir.data.manifests import (
 from tabpfn_ir.data.preprocessing import ProcessedViews, TabularPreprocessor
 from tabpfn_ir.data.splitting import (
     SplitIndices,
+    localpfn_split_indices,
     stratified_train_validation_test_split,
     tabpfn_v1_split_indices,
 )
@@ -32,6 +33,7 @@ __all__ = [
     "load_openml_manifest",
     "load_openml_dataset",
     "load_tabzilla_dataset",
+    "localpfn_split_indices",
     "stratified_train_validation_test_split",
     "tabpfn_v1_split_indices",
 ]

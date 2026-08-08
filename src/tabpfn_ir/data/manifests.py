@@ -13,8 +13,12 @@ class OpenMLManifestEntry:
 
     dataset_id: int
     name: str
+    task_id: int | None = None
     target: str | None = None
     version: int | None = None
+    n_instances: int | None = None
+    n_features: int | None = None
+    n_classes: int | None = None
 
 
 @dataclass(frozen=True)

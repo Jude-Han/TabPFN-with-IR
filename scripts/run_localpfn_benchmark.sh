@@ -9,6 +9,7 @@ seed="${EXPERIMENT_SEED:-42}"
 evaluation_split="${EVALUATION_SPLIT:-test}"
 methods="${METHODS:-full random knn}"
 k_values="${K_VALUES:-localpfn}"
+maximum_context_size="${MAXIMUM_CONTEXT_SIZE:-1000}"
 random_ratios="${RANDOM_RATIOS:-}"
 output="${OUTPUT:-${repository_dir}/outputs/localpfn/results.jsonl}"
 model_version="${MODEL_VERSION:-v2.6}"
@@ -16,6 +17,7 @@ context_batch_size="${CONTEXT_BATCH_SIZE:-32}"
 extra_args=(
   --model-version "${model_version}"
   --context-batch-size "${context_batch_size}"
+  --maximum-context-size "${maximum_context_size}"
 )
 
 if [[ -n "${DEVICES:-}" ]]; then

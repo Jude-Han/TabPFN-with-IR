@@ -4,6 +4,8 @@ set -euo pipefail
 dataset_id="${1:?Usage: scripts/run_full.sh DATASET_ID [TARGET]}"
 target_name="${2:-}"
 experiment_seed="${EXPERIMENT_SEED:-42}"
+split_seed="${SPLIT_SEED:-0}"
+fold="${FOLD:-0}"
 evaluation_split="${EVALUATION_SPLIT:-test}"
 python_command="${PYTHON_COMMAND:-python}"
 device="${DEVICE:-auto}"
@@ -17,12 +19,14 @@ common_args=(
   --dataset-id "${dataset_id}"
   --method full
   --seed "${experiment_seed}"
+  --split-seed "${split_seed}"
+  --fold "${fold}"
   --device "${device}"
   --fit-mode "${fit_mode}"
   --model-version "${model_version}"
   --context-batch-size "${context_batch_size}"
   --evaluation-split "${evaluation_split}"
-  --output "${output_dir}/full-seed-${experiment_seed}-${evaluation_split}.json"
+  --output "${output_dir}/full-seed-${experiment_seed}-splitseed-${split_seed}-fold-${fold}-${evaluation_split}.json"
 )
 if [[ -n "${DEVICES:-}" ]]; then
   read -r -a selected_devices <<< "${DEVICES}"

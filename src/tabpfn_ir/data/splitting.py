@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
-from sklearn.model_selection import StratifiedShuffleSplit, train_test_split
+from sklearn.model_selection import StratifiedKFold, StratifiedShuffleSplit, train_test_split
 
 
 @dataclass(frozen=True)
@@ -86,3 +86,45 @@ def tabpfn_v1_split_indices(
         )
         for train, test in splitter.split(placeholder, y)
     )
+
+
+def localpfn_split_indices(
+    y: np.ndarray,
+    *,
+    n_splits: int = 10,
+    random_state: int = 0,
+) -> tuple[SplitIndices, ...]:
+    """Reproduce TabZilla/LoCalPFN's stratified 80/10/10 fold construction.
+
+    Fold ``i`` is the test set, fold ``(i + 1) % n_splits`` is validation,
+    and all remaining folds are training data. This mirrors TabZilla's
+    ``split_dataset`` implementation used by LoCalPFN.
+    """
+
+    y = np.asarray(y)
+    if y.ndim != 1:
+        raise ValueError(f"y must be one-dimensional, got shape {y.shape}.")
+    if n_splits < 3:
+        raise ValueError("n_splits must be at least 3.")
+
+    splitter = StratifiedKFold(
+        n_splits=n_splits,
+        shuffle=True,
+        random_state=random_state,
+    )
+    placeholder = np.zeros((y.shape[0], 1), dtype=np.uint8)
+    test_folds = [np.sort(test) for _, test in splitter.split(placeholder, y)]
+    all_indices = np.arange(y.shape[0])
+    splits = []
+    for fold, test in enumerate(test_folds):
+        validation = test_folds[(fold + 1) % n_splits]
+        holdout = np.concatenate([test, validation])
+        train = np.setdiff1d(all_indices, holdout, assume_unique=True)
+        splits.append(
+            SplitIndices(
+                train=train,
+                validation=validation,
+                test=test,
+            )
+        )
+    return tuple(splits)

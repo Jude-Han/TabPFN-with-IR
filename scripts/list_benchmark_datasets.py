@@ -14,20 +14,30 @@ from tabpfn_ir.data import (
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_V1_MANIFEST = REPOSITORY_ROOT / "data/manifests/tabpfn_v1_30.json"
+DEFAULT_CC18_MANIFEST = REPOSITORY_ROOT / "data/manifests/openml_cc18.json"
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--benchmark", choices=["tabpfn-v1", "localpfn"], required=True)
-    parser.add_argument("--manifest", type=Path, default=DEFAULT_V1_MANIFEST)
+    parser.add_argument(
+        "--benchmark",
+        choices=["tabpfn-v1", "openml-cc18", "localpfn"],
+        required=True,
+    )
+    parser.add_argument("--manifest", type=Path)
     parser.add_argument("--tabzilla-root", type=Path)
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-    if args.benchmark == "tabpfn-v1":
-        for entry in load_openml_manifest(args.manifest).datasets:
+    if args.benchmark in {"tabpfn-v1", "openml-cc18"}:
+        default_manifest = (
+            DEFAULT_V1_MANIFEST
+            if args.benchmark == "tabpfn-v1"
+            else DEFAULT_CC18_MANIFEST
+        )
+        for entry in load_openml_manifest(args.manifest or default_manifest).datasets:
             print(entry.dataset_id)
         return
 

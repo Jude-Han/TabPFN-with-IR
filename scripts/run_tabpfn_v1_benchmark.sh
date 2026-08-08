@@ -3,13 +3,23 @@ set -euo pipefail
 
 repository_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 python_command="${PYTHON_COMMAND:-python}"
+benchmark="${BENCHMARK:-tabpfn-v1}"
 device="${DEVICE:-cuda}"
 seed="${EXPERIMENT_SEED:-42}"
+split_seed="${SPLIT_SEED:-0}"
 evaluation_split="${EVALUATION_SPLIT:-test}"
 methods="${METHODS:-full random knn}"
 k_values="${K_VALUES:-localpfn}"
+maximum_context_size="${MAXIMUM_CONTEXT_SIZE:-1000}"
 random_ratios="${RANDOM_RATIOS:-}"
-output="${OUTPUT:-${repository_dir}/outputs/tabpfn-v1/results.jsonl}"
+case "${benchmark}" in
+  tabpfn-v1|openml-cc18) ;;
+  *)
+    echo "BENCHMARK must be tabpfn-v1 or openml-cc18." >&2
+    exit 2
+    ;;
+esac
+output="${OUTPUT:-${repository_dir}/outputs/${benchmark}/results.jsonl}"
 model_version="${MODEL_VERSION:-v2.6}"
 context_batch_size="${CONTEXT_BATCH_SIZE:-32}"
 inference_profile="${INFERENCE_PROFILE:-single-estimator}"
@@ -17,6 +27,8 @@ extra_args=(
   --model-version "${model_version}"
   --context-batch-size "${context_batch_size}"
   --inference-profile "${inference_profile}"
+  --maximum-context-size "${maximum_context_size}"
+  --split-seed "${split_seed}"
 )
 
 if [[ -n "${DEVICES:-}" ]]; then
@@ -51,12 +63,15 @@ if [[ -n "${DATASET_NAMES:-}" ]]; then
   read -r -a dataset_names <<< "${DATASET_NAMES}"
   extra_args+=(--dataset-names "${dataset_names[@]}")
 fi
+if [[ -n "${MANIFEST:-}" ]]; then
+  extra_args+=(--manifest "${MANIFEST}")
+fi
 
 cd "${repository_dir}"
 for method in ${methods}; do
   if [[ "${method}" == "full" ]]; then
     "${python_command}" scripts/run_benchmark.py \
-      --benchmark tabpfn-v1 --method full --device "${device}" --seed "${seed}" \
+      --benchmark "${benchmark}" --method full --device "${device}" --seed "${seed}" \
       --evaluation-split "${evaluation_split}" --output "${output}" --resume \
       "${extra_args[@]}"
     continue
@@ -64,7 +79,7 @@ for method in ${methods}; do
   if [[ "${method}" == "random" && -n "${random_ratios}" ]]; then
     for ratio in ${random_ratios}; do
       "${python_command}" scripts/run_benchmark.py \
-        --benchmark tabpfn-v1 --method random --random-ratio "${ratio}" \
+        --benchmark "${benchmark}" --method random --random-ratio "${ratio}" \
         --device "${device}" --seed "${seed}" --evaluation-split "${evaluation_split}" \
         --output "${output}" --resume \
         "${extra_args[@]}"
@@ -73,7 +88,7 @@ for method in ${methods}; do
   fi
   for k in ${k_values}; do
     "${python_command}" scripts/run_benchmark.py \
-      --benchmark tabpfn-v1 --method "${method}" --k "${k}" \
+      --benchmark "${benchmark}" --method "${method}" --k "${k}" \
       --device "${device}" --seed "${seed}" --evaluation-split "${evaluation_split}" \
       --output "${output}" --resume \
       "${extra_args[@]}"
