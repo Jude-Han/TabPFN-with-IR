@@ -5,15 +5,21 @@ from tabpfn_ir.models.configuration import (
     build_tabpfn_classifier_kwargs,
     resolve_n_estimators,
 )
+from tabpfn_ir.models.local_finetuning import (
+    LocalFinetunedTabPFNClassifier,
+    LocalPredictionResult,
+)
 from tabpfn_ir.models.tabpfn_adapter import (
     ContextInferenceStats,
     ContextualTabPFNClassifier,
 )
 
 __all__ = [
+    "TABPFN_INFERENCE_PROFILES",
     "ContextInferenceStats",
     "ContextualTabPFNClassifier",
-    "TABPFN_INFERENCE_PROFILES",
+    "LocalFinetunedTabPFNClassifier",
+    "LocalPredictionResult",
     "build_tabpfn_classifier_kwargs",
     "resolve_n_estimators",
 ]

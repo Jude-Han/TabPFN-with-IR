@@ -2,7 +2,7 @@
 
 This repository studies whether a plug-and-play information retrieval (IR) module can make tabular foundation models such as TabPFN effective on datasets that are larger than their practical in-context learning (ICL) budget.
 
-Instead of passing an entire training set to TabPFN, the retriever selects a small, query-specific set of rows. These rows and their labels are then used as the ICL examples for the frozen TabPFN model. The long-term goal is to learn a retrieval policy that selects examples for their usefulness to TabPFN, rather than relying only on geometric proximity in the original feature space.
+Instead of passing an entire training set to TabPFN, the retriever selects a small, query-specific set of rows. These rows and their labels are then used as the ICL examples for TabPFN. The `full`, `random`, and `knn` baselines keep the backbone frozen. The implemented `local-ft` workflow additionally fine-tunes all TabPFN v2.6 weights on LoCalPFN-style local context/query episodes. The long-term goal is to learn a retrieval policy that selects examples for their usefulness to TabPFN, rather than relying only on geometric proximity in the original feature space.
 
 ## Research question
 
@@ -100,6 +100,20 @@ k = min(10 * sqrt(n_train), 1000)
 
 will be evaluated alongside fixed context budgets so that methods can also be compared at exactly the same `k`.
 
+### 4. LoCalPFN-style kNN retrieval with task fine-tuning
+
+The `local-ft` workflow starts from the Hugging Face TabPFN v2.6 classifier checkpoint and performs
+end-to-end supervised fine-tuning for one dataset fold. Training examples are local meta-datasets:
+random anchor rows define exact-FAISS neighborhoods, each neighborhood is shuffled into a labeled
+context and a supervised query set, and cross-entropy is computed only on the query labels. AdamW
+updates the complete TabPFN transformer, not merely a prediction head or an added adapter.
+
+Validation and test inference use the same exact query-specific kNN path as the frozen `knn`
+baseline. The validation fold is used for early stopping; test labels are used only after the best
+weights have been selected. This implementation is LoCalPFN-style rather than a bit-for-bit
+reproduction: the original paper fine-tuned the older TabPFN architecture, whereas this repository
+deliberately adapts the pinned v2.6 checkpoint through TabPFN 8.2.0's official fine-tuning engine.
+
 ## Proposed IR extension
 
 The next phase will replace hand-designed nearest-neighbor retrieval with an IR model that assigns a relevance score to every candidate row:
@@ -177,7 +191,8 @@ configs/                 Experiment and dataset configurations
 data/manifests/          Versioned OpenML IDs and dataset metadata
 src/tabpfn_ir/data/      Downloading, splitting, and preprocessing
 src/tabpfn_ir/retrieval/ Full, random, and kNN retrievers
-src/tabpfn_ir/models/    Frozen TabPFN prediction adapter
+src/tabpfn_ir/models/    Frozen prediction and v2.6 local fine-tuning adapters
+src/tabpfn_ir/training/  Local context/query episode sampling
 src/tabpfn_ir/evaluation/ Metrics and one-fold experiment runner
 scripts/                 Benchmark entry points
 tests/                   Leakage, determinism, and retriever tests
@@ -284,7 +299,7 @@ CONTEXT_SIZE=128 EVALUATION_SPLIT=test scripts/run_random.sh 31 class
 The environment variables `FOLD`, `SPLIT_SEED`, `MAXIMUM_CONTEXT_SIZE`, `EXPERIMENT_SEED`,
 `DATASET_VERSION`, `PYTHON_COMMAND`, and `OUTPUT_DIR` can override the remaining defaults.
 
-### Multi-GPU TabPFN inference
+### TabPFN v2.6 installation and authentication
 
 The benchmark environment is pinned to `tabpfn==8.2.0`. Upgrade the existing environment after
 installing a CUDA-compatible PyTorch build:
@@ -327,6 +342,254 @@ The API key does not itself accept a model license. While logged into the same P
 accept the `tabpfn_2_6` license at the URL reported by TabPFN. If the program still raises
 `TabPFNLicenseError: License not yet accepted` while the check above prints `True`, the account-side
 license acceptance is the remaining step rather than `.env` loading.
+
+The downloaded checkpoint and fine-tuned derivatives remain subject to the
+[TabPFN v2.6 model license](https://huggingface.co/Prior-Labs/tabpfn_2_6). Review that license before
+sharing checkpoints or using them outside the permitted research/internal-evaluation scope; the
+repository's source-code license does not replace the model license.
+
+## Local fine-tuning on TabPFN v2.6
+
+### What is implemented
+
+`scripts/run_local_finetuning.py` implements Method A: it retains the official TabPFN 8.2.0
+fine-tuning engine and changes the construction of its training meta-datasets. Consequently the
+official implementation still controls model loading, full-parameter AdamW optimization, automatic
+mixed precision on CUDA, gradient clipping, activation checkpointing, LR scheduling, DDP,
+checkpoint saving/resume, and best-weight restoration. The project-specific adapter controls local
+episode sampling, the batched episode loss, exact-kNN validation, and exact-kNN test inference.
+
+The workflow is version-gated to `tabpfn==8.2.0` because it uses a narrow private data-construction
+hook that is not part of TabPFN's stable public API. It also passes `ModelVersion.V2_6` explicitly and
+rejects `model_path` overrides. This prevents a future TabPFN default or a different checkpoint from
+silently changing an experiment.
+
+An ordinary `TabPFNClassifier.fit(X, y)` call is still ICL context registration and does **not**
+update weights. Supervised updates occur only through `LocalFinetunedTabPFNClassifier.fit(...)` or
+the local fine-tuning runner.
+
+### Training and inference flow
+
+For every train/validation/test fold, the implementation performs the following operations:
+
+1. Fit the ordinal model view and standardized numerical plus one-hot categorical retrieval view on
+   the training fold only. Validation and test rows are transformed without refitting.
+2. Resolve the local context budget `k`. `localpfn` means
+   `min(int(10 * sqrt(n_train)), maximum_context_size)`.
+3. Build one exact `faiss.IndexFlatL2` index over the training retrieval view and one small exact
+   index per class.
+4. At every epoch, sample `steps_per_epoch * episode_batch_size` random training anchors. For each
+   anchor, retrieve `k + train_query_size` nearby training rows.
+5. If a neighborhood omits a training class, replace one of its farthest redundant-class rows with
+   the nearest row from the missing class. Then reserve one row per class for context, shuffle the
+   remaining rows, fill a context of size `k`, and use the rest as supervised queries. This guarantees
+   that every query label is representable by its context and that TabPFN 8.2's episode-local label
+   encoder has a stable class dimension. It is a documented v2.6 compatibility adjustment; it can
+   add a small number of non-global-kNN rows on extremely class-local or imbalanced data.
+6. Fuse `episode_batch_size` independent, equal-shaped local datasets into one TabPFN forward.
+   Cross-entropy is averaged over all query rows and fine-tuning ensemble members. Backpropagation
+   updates every parameter in the v2.6 backbone.
+7. After each epoch, evaluate the changing weights on the held-out validation fold. Every validation
+   row receives its own exact `k`-neighbor training context. Macro OVO ROC AUC or negative log loss
+   drives early stopping, and the best weights are retained.
+8. Run final test inference once, again using exact train-only kNN contexts. Test labels never enter
+   retrieval, optimization, checkpoint selection, or early stopping.
+
+With the defaults `steps_per_epoch=30` and `episode_batch_size=2`, validation happens after 30
+optimizer steps and 60 local neighborhoods. This matches the paper's evaluation cadence of every 30
+gradient steps and its local batch size of two. On a small fold, the context budget is preserved and
+`train_query_size` is shortened so at least one query row remains.
+
+### Smoke test
+
+Use one dataset, one fold, smaller episodes, and a single epoch before a real run:
+
+```bash
+python scripts/run_local_finetuning.py \
+  --benchmark openml-cc18 \
+  --dataset-ids 31 \
+  --folds 0 \
+  --k 128 \
+  --train-query-size 32 \
+  --steps-per-epoch 1 \
+  --episode-batch-size 1 \
+  --epochs 1 \
+  --n-estimators-finetune 1 \
+  --n-estimators-validation 1 \
+  --n-estimators-final 1 \
+  --max-validation-samples 32 \
+  --max-query-samples 32 \
+  --device cuda \
+  --output outputs/local-finetuning/smoke.jsonl \
+  --checkpoint-root outputs/local-finetuning/checkpoints \
+  --fail-fast
+```
+
+`--max-validation-samples` and `--max-query-samples` are smoke-test controls. Do not use them for
+final benchmark numbers.
+
+Run a normal OpenML-CC18 fold with the convenience wrapper:
+
+```bash
+DATASET_IDS=31 \
+FOLDS=0 \
+DEVICE=cuda \
+CONTEXT_SIZE=localpfn \
+EPOCHS=30 \
+scripts/run_local_finetuning.sh
+```
+
+Run a stored TabZilla/LoCalPFN fold:
+
+```bash
+BENCHMARK=localpfn \
+DATASET_NAMES="<tabzilla-directory-name>" \
+FOLDS=0 \
+DEVICE=cuda \
+scripts/run_local_finetuning.sh /path/to/tabzilla/TabZilla/datasets
+```
+
+The precise directory name depends on the local TabZilla metadata. Inspect available names with:
+
+```bash
+python scripts/list_benchmark_datasets.py \
+  --benchmark localpfn \
+  --tabzilla-root /path/to/tabzilla/TabZilla/datasets
+```
+
+### Multi-GPU fine-tuning
+
+TabPFN's official fine-tuning example recommends a CUDA GPU with 80 GB of VRAM. Actual memory here
+depends strongly on `k`, `train_query_size`, the episode batch, and the number of fine-tuning
+estimators. Activation checkpointing is enabled by default so smaller GPUs can often run reduced
+configurations.
+
+Fine-tuning uses data-distributed training rather than the inference-only `--devices` option. Launch
+one fold with `torchrun`:
+
+```bash
+torchrun --nproc-per-node=4 scripts/run_local_finetuning.py \
+  --benchmark openml-cc18 \
+  --dataset-ids 31 \
+  --folds 0 \
+  --device cuda \
+  --k localpfn \
+  --output outputs/local-finetuning/credit-g-fold0.jsonl
+```
+
+Every rank constructs the same deterministic episode pool, and TabPFN's distributed sampler assigns
+different episodes to ranks. Only rank 0 validates, writes checkpoints, performs final inference,
+and appends the JSONL result. A `torchrun` invocation must select exactly one dataset and one fold;
+submit separate jobs for additional dataset-fold pairs. Pre-cache OpenML data before a multi-process
+run if the local OpenML cache does not support concurrent first downloads safely.
+
+### Hyperparameters to set deliberately
+
+The defaults are safe starting points for v2.6, not universal optima. Select them with the validation
+fold only, then run the test fold once.
+
+| CLI option | Default | What it controls | How to tune it |
+| --- | ---: | --- | --- |
+| `--k` | `localpfn` | Context rows used in every training episode and every validation/test query. This is the most important locality/bias/variance parameter. | Try `128, 256, 512, 1000, localpfn`. Smaller values are cheaper and more local; larger values improve coverage but can blur local boundaries and increase memory. It must be at least the number of training classes. |
+| `--maximum-context-size` | `1000` | Cap in the dynamic LoCalPFN formula. | Lower it first when the dynamic context does not fit memory. Keep it fixed across compared methods. |
+| `--train-query-size` | `1000` | Supervised query rows inside each local neighborhood. More rows reduce gradient noise but lengthen attention and consume memory. | Start with `1000` when the fold and GPU allow it. Try `128, 256, 512` on 24 GB-class GPUs. Small folds automatically shorten it after preserving `k`. |
+| `--episode-batch-size` | `2` | Independent anchor neighborhoods fused into one optimizer step; this is the paper's `B`. | Keep `2` for the closest paper-style run. Reduce to `1` first after OOM. Larger values require careful LR retuning and are not a default recommendation. |
+| `--steps-per-epoch` | `30` | Optimizer updates between validations. Together with epochs, it defines the training budget. | Increase to `60` or `100` only if validation is still improving and validation overhead is acceptable. Lower it for rapid feedback or expensive validation folds. |
+| `--epochs` | `30` | Maximum validation cycles. Early stopping may finish earlier. | Use `30-100` with early stopping. Compare runs by optimizer steps (`epochs * steps_per_epoch`), not epochs alone. |
+| `--learning-rate` | `1e-5` | AdamW step size for every v2.6 weight. This is the highest-risk parameter. | Start at `1e-5`; validate `3e-6, 1e-5, 3e-5`. Reduce it when loss spikes or validation immediately degrades. The paper's `0.01` was for the older TabPFN code and is intentionally not the v2.6 default. |
+| `--weight-decay` | `0.01` | AdamW regularization. | Usually keep `0.01`; try `0` or `0.001` if the task is tiny and underfitting, or a slightly larger value only with clear overfitting. |
+| `--scheduler` | `cosine` | `cosine` uses 10% linear warmup followed by cosine decay; `warmup-only` stays at the base LR after warmup; `none` keeps a constant LR. | Use `cosine` first. `none` is the closest paper setting but should be combined with a conservative v2.6 LR. |
+| `--grad-clip-value` | `1.0` | Maximum global gradient norm; `0` disables clipping. | Keep `1.0` unless measuring proves it unnecessary. Lower it if gradients/loss are unstable; disabling it is not recommended for an initial run. |
+| `--eval-metric` | `roc_auc` | Validation objective for best-checkpoint selection. `log_loss` is internally maximized as negative log loss. | Use `roc_auc` for paper comparison and `log_loss` when calibrated probabilities are the primary goal. Choose before viewing test results. |
+| `--early-stopping-patience` | `8` | Validation cycles allowed without a `min_delta` improvement. | Use `5-15`. Increase it for noisy small validation folds; decrease it for expensive, clearly saturated runs. |
+| `--min-delta` | `1e-4` | Smallest validation change counted as an improvement. | Keep `1e-4` initially. Raise it to stop earlier when metric noise creates meaningless checkpoint churn. |
+| `--n-estimators-finetune` | `2` | TabPFN preprocessing/ensemble members included in each training loss. | Reduce to `1` after OOM. Increasing it improves augmentation/ensemble exposure but roughly multiplies work. |
+| `--n-estimators-validation` | `2` | Ensemble members used for every early-stopping evaluation. | Keep equal to the fine-tuning value for comparable preprocessing. Reduce only when validation dominates runtime. |
+| `--n-estimators-final` | `2` | Ensemble members used for final exact-kNN inference. | Increase to `4` or `8` only after the training configuration is selected and memory/runtime allow it. Record it because it changes predictions. |
+| `--activation-checkpointing` | enabled | Recomputes transformer activations during backward to reduce peak memory. | Leave enabled unless profiling shows abundant memory and recomputation is the runtime bottleneck. |
+| `--fixed-preprocessing-seed` | enabled | Keeps TabPFN's feature/preprocessing randomization stable across episodes. | Leave enabled for lower training noise and reproducibility. Keep all three estimator counts equal when possible. |
+| `--retrieval-batch-size` | `512` | CPU FAISS query chunking during episode, validation, and test retrieval. | It normally affects speed, not neighbors. Lower it only for host-memory pressure. |
+| `--context-batch-size` | `32` | Number of shape/class-compatible query contexts fused during local validation/test inference. | Try `8, 16, 32, 64`. Lower after inference OOM; changing it should not change intended predictions. |
+| `--save-checkpoint-interval` | `10` | Interval checkpoint cadence. `0` disables interval checkpoints, while improving best checkpoints remain enabled when early stopping is enabled. | Use `1` for maximum interruption recovery, at substantial disk cost. The official resume path resumes numbered interval checkpoints, not a best-only checkpoint. |
+| `--time-limit` | none | Wall-clock training limit in seconds. | Use for managed clusters. The loop stops before starting an epoch that is unlikely to finish within the remaining budget. |
+| `--seed` | `0` | Anchor sampling, TabPFN initialization/preprocessing, and data-loader order. | Run at least three seeds for a stability study after choosing hyperparameters. Do not use test performance to select a seed. |
+
+When memory is insufficient, reduce settings in this order: set
+`episode_batch_size=1`, set all estimator counts to `1`, reduce `train_query_size`, then reduce `k`.
+Keep activation checkpointing enabled. `context_batch_size` primarily controls validation/test
+inference memory and does not solve backward-pass OOM.
+
+A practical validation search is:
+
+```text
+k:             128, 256, 512, localpfn
+learning rate: 3e-6, 1e-5, 3e-5
+query size:    256, 512, 1000 (subject to memory)
+```
+
+First choose a feasible `k` and query size, then tune the learning rate. Avoid a full Cartesian grid
+unless compute permits it. Keep split, seed set, training-step budget, and inference estimator count
+fixed while comparing configurations.
+
+### Paper settings versus v2.6 defaults
+
+The LoCalPFN paper used `k=min(10*sqrt(n_train),1000)`, 1,000 training query rows, local batch size
+two, AdamW with learning rate `0.01` and weight decay `0.01`, no warmup/scheduler, validation AUC
+evaluation every 30 gradient steps, and exact-kNN inference batches of 512. This implementation maps
+`k`, query size, batch size, weight decay, evaluation cadence, metric, and retrieval batch size
+directly. It intentionally changes the starting LR to `1e-5`, enables gradient clipping, activation
+checkpointing, and a warmup/cosine schedule because the fine-tuned backbone is TabPFN v2.6 rather
+than the paper's old checkpoint. Use `--scheduler none` for the scheduler ablation, but do not copy
+the old `0.01` LR without a separate stability study.
+
+### Outputs, checkpoints, and resume behavior
+
+Each successful JSONL row records the complete fine-tuning configuration, package versions,
+effective context/query sizes, preprocessing/training/retrieval/prediction timings, context batching
+diagnostics, classification metrics, and checkpoint directory. Failures are appended with their
+exception type and message.
+
+Checkpoint paths contain benchmark, dataset, fold, user tag, and a hash of all fine-tuning
+hyperparameters. Re-running the same path allows TabPFN's official loop to resume from its latest
+numbered interval checkpoint. `--resume` additionally skips configurations already marked successful
+in the JSONL output. Change `--checkpoint-tag` to create an intentionally separate run lineage; do
+not manually mix checkpoints produced by different hyperparameters.
+
+Programmatic use is available through `LocalFinetunedTabPFNClassifier`. It deliberately requires
+both aligned feature views and an explicit validation fold:
+
+```python
+from pathlib import Path
+
+from tabpfn_ir.models import LocalFinetunedTabPFNClassifier
+
+model = LocalFinetunedTabPFNClassifier(
+    context_size=512,
+    train_query_size=1000,
+    steps_per_epoch=30,
+    episode_batch_size=2,
+    learning_rate=1e-5,
+    epochs=30,
+    device="cuda",
+)
+model.fit(
+    X_train_model,
+    y_train,
+    X_train_retrieval=X_train_retrieval,
+    X_val_model=X_validation_model,
+    y_val=y_validation,
+    X_val_retrieval=X_validation_retrieval,
+    output_dir=Path("outputs/checkpoints/my-fold"),
+)
+prediction = model.predict_proba_local(X_test_model, X_test_retrieval)
+probabilities = prediction.probabilities
+classes = prediction.classes
+```
+
+The explicit `predict_proba_local` name is intentional: final prediction must receive the retrieval
+view and must not accidentally fall back to a global full-context prediction.
+
+## Multi-GPU TabPFN inference
 
 Run full-context inference using all four GPUs explicitly:
 
@@ -609,11 +872,14 @@ context. Start with the smoke commands and estimate runtime before launching all
 ## Implementation roadmap
 
 1. Run context-budget-matched baselines on the implemented TabPFN v1 and LoCalPFN suites.
-2. Validate benchmark counts, runtime, and result aggregation on a small dataset subset.
-3. Scale the benchmark to all eligible datasets and record predictive and efficiency metrics.
-4. Build an oracle or leave-one-out utility analysis to study which rows actually help TabPFN.
-5. Train a retrieval model from the resulting relevance signal and compare it with random and kNN retrieval.
-6. Add candidate generation, reranking, diversity constraints, and retrieval caching for large datasets.
+2. Validate the implemented v2.6 local fine-tuning workflow on smoke folds and establish GPU-safe
+   context/query budgets.
+3. Compare frozen kNN and local fine-tuning under identical splits, `k`, retrieval features, and
+   inference estimator counts.
+4. Scale the benchmark to all eligible datasets and record predictive and efficiency metrics.
+5. Build an oracle or leave-one-out utility analysis to study which rows actually help TabPFN.
+6. Train a retrieval model from the resulting relevance signal and compare it with random and kNN retrieval.
+7. Add candidate generation, reranking, diversity constraints, and retrieval caching for large datasets.
 
 ## Reproducibility principles
 
@@ -627,13 +893,16 @@ context. Start with the smoke commands and estimate runtime before launching all
 ## Project status
 
 The baseline implementation now supports the TabPFN v1 30-dataset protocol and the official
-TabZilla folds selected by the LoCalPFN filters. The immediate milestone is to run and validate the
-full-context, random-row, and LoCalPFN-style kNN comparison without supervised fine-tuning.
+TabZilla folds selected by the LoCalPFN filters. Frozen full-context, random-row, and exact-kNN
+baselines are implemented. LoCalPFN-style supervised task fine-tuning is also implemented for
+OpenML-CC18 and stored TabZilla folds with the pinned TabPFN v2.6 checkpoint; the immediate milestone
+is GPU smoke validation followed by matched frozen-kNN versus fine-tuned-kNN experiments.
 
 ## Reference
 
 - [*Retrieval & Fine-Tuning for In-Context Tabular Models*](https://github.com/layer6ai-labs/LoCalPFN)
   (Thomas et al. 2024)
+- [TabPFN official fine-tuning implementation](https://github.com/PriorLabs/TabPFN/tree/v8.2.0/src/tabpfn/finetuning)
 - [*TabPFN: A Transformer That Solves Small Tabular Classification Problems in a Second*](https://arxiv.org/abs/2207.01848)
   (Hollmann et al. 2022)
 - [TabZilla official repository](https://github.com/naszilla/tabzilla)

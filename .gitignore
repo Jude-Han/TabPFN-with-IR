@@ -3,6 +3,7 @@
 
 *.pdf
 
+.DS_Store
 __pycache__/
 *.py[cod]
 .pytest_cache/
@@ -10,5 +11,7 @@ __pycache__/
 .venv/
 outputs/*
 !outputs/.gitkeep
+
+docs
 
 *.egg-info/
