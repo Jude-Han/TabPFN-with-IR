@@ -1,6 +1,7 @@
 import numpy as np
 import pytest
 
+from tabpfn_ir.models.local_finetuning import _backport_v26_activation_checkpointing
 from tabpfn_ir.training import LocalEpisodeSampler, resolve_episode_sizes
 
 
@@ -75,3 +76,20 @@ def test_sampling_rejects_unresolved_sizes():
     y = np.asarray([0, 1] * 5)
     with pytest.raises(ValueError, match="already-resolved sizes"):
         LocalEpisodeSampler(context_size=9, query_size=5).fit(X, y)
+
+
+def test_v26_checkpoint_backport_does_not_consume_shared_input_list():
+    class PoppingBlock:
+        def forward(self, state):
+            return state.pop(0)
+
+    original_forward = PoppingBlock.forward
+    shared_checkpoint_input = ["tensor-placeholder"]
+    block = PoppingBlock()
+
+    with _backport_v26_activation_checkpointing(PoppingBlock):
+        assert block.forward(shared_checkpoint_input) == "tensor-placeholder"
+        assert block.forward(shared_checkpoint_input) == "tensor-placeholder"
+        assert shared_checkpoint_input == ["tensor-placeholder"]
+
+    assert PoppingBlock.forward is original_forward

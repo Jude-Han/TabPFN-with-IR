@@ -364,6 +364,16 @@ hook that is not part of TabPFN's stable public API. It also passes `ModelVersio
 rejects `model_path` overrides. This prevents a future TabPFN default or a different checkpoint from
 silently changing an experiment.
 
+TabPFN 8.2.0 also has an activation-checkpointing defect specific to the v2.6 architecture: its
+forward pass removes a tensor from a mutable list, so backward recomputation receives an empty list
+and raises `IndexError: pop from empty list`. The
+[upstream v8.3.0 fix](https://github.com/PriorLabs/TabPFN/commit/fa9b33344bc37b8a896f40efaf9ec5f331057615)
+changed the checkpoint path to pass the tensor directly. While activation checkpointing is enabled,
+this project applies a scoped compatibility backport with the same effect: the installed package is
+not edited, the input list remains reusable during recomputation, and the original method is restored
+after `fit` exits.
+The applied backport is recorded in every JSONL fine-tuning configuration.
+
 An ordinary `TabPFNClassifier.fit(X, y)` call is still ICL context registration and does **not**
 update weights. Supervised updates occur only through `LocalFinetunedTabPFNClassifier.fit(...)` or
 the local fine-tuning runner.
@@ -506,7 +516,7 @@ fold only, then run the test fold once.
 | `--n-estimators-finetune` | `2` | TabPFN preprocessing/ensemble members included in each training loss. | Reduce to `1` after OOM. Increasing it improves augmentation/ensemble exposure but roughly multiplies work. |
 | `--n-estimators-validation` | `2` | Ensemble members used for every early-stopping evaluation. | Keep equal to the fine-tuning value for comparable preprocessing. Reduce only when validation dominates runtime. |
 | `--n-estimators-final` | `2` | Ensemble members used for final exact-kNN inference. | Increase to `4` or `8` only after the training configuration is selected and memory/runtime allow it. Record it because it changes predictions. |
-| `--activation-checkpointing` | enabled | Recomputes transformer activations during backward to reduce peak memory. | Leave enabled unless profiling shows abundant memory and recomputation is the runtime bottleneck. |
+| `--activation-checkpointing` | enabled | Recomputes transformer activations during backward to reduce peak memory. The adapter automatically applies the scoped TabPFN 8.2.0 v2.6 empty-list compatibility backport. | Leave enabled unless profiling shows abundant memory and recomputation is the runtime bottleneck. `--no-activation-checkpointing` is also a quick diagnostic for any future checkpoint-related incompatibility. |
 | `--fixed-preprocessing-seed` | enabled | Keeps TabPFN's feature/preprocessing randomization stable across episodes. | Leave enabled for lower training noise and reproducibility. Keep all three estimator counts equal when possible. |
 | `--retrieval-batch-size` | `512` | CPU FAISS query chunking during episode, validation, and test retrieval. | It normally affects speed, not neighbors. Lower it only for host-memory pressure. |
 | `--context-batch-size` | `32` | Number of shape/class-compatible query contexts fused during local validation/test inference. | Try `8, 16, 32, 64`. Lower after inference OOM; changing it should not change intended predictions. |
@@ -554,6 +564,10 @@ hyperparameters. Re-running the same path allows TabPFN's official loop to resum
 numbered interval checkpoint. `--resume` additionally skips configurations already marked successful
 in the JSONL output. Change `--checkpoint-tag` to create an intentionally separate run lineage; do
 not manually mix checkpoints produced by different hyperparameters.
+
+On a first run, TabPFN may warn that the output directory exists but contains no checkpoint. This is
+expected: the runner created the directory, TabPFN found nothing to resume, and training starts from
+the original v2.6 checkpoint at epoch zero. It is unrelated to the activation-checkpointing error.
 
 Programmatic use is available through `LocalFinetunedTabPFNClassifier`. It deliberately requires
 both aligned feature views and an explicit validation fold:

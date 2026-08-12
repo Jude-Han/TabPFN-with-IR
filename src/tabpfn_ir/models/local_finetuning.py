@@ -14,6 +14,7 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import wraps
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from time import perf_counter
@@ -95,6 +96,45 @@ def _replace_tabpfn_dataset_builder(builder: Any) -> Iterator[None]:
             finetuned_base.get_preprocessed_dataset_chunks = original
 
 
+@contextmanager
+def _backport_v26_activation_checkpointing(block_class: type[Any] | None = None) -> Iterator[None]:
+    """Keep v8.2.0 checkpoint inputs reusable during backward recomputation.
+
+    TabPFN 8.2.0 passes a length-one list into ``torch.utils.checkpoint`` and
+    ``TabPFNBlock.forward`` consumes that list with ``pop(0)``. The non-reentrant
+    checkpoint implementation invokes the block again during backward with the
+    same, now-empty list. Upstream fixed this by passing the tensor directly.
+
+    This scoped backport preserves the external list and lets the original block
+    consume a fresh shallow copy on each forward/recompute call. It is equivalent
+    for the contained tensor and avoids modifying the installed TabPFN package.
+    """
+
+    if block_class is None:
+        from tabpfn.architectures.tabpfn_v2_6 import TabPFNBlock
+
+        block_class = TabPFNBlock
+
+    original_forward = block_class.forward
+
+    @wraps(original_forward)
+    def forward_without_consuming_checkpoint_input(
+        block: Any,
+        state: Any,
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        reusable_state = list(state) if isinstance(state, list) else state
+        return original_forward(block, reusable_state, *args, **kwargs)
+
+    with _DATASET_BUILDER_LOCK:
+        block_class.forward = forward_without_consuming_checkpoint_input
+        try:
+            yield
+        finally:
+            block_class.forward = original_forward
+
+
 class LocalFinetunedTabPFNClassifier:
     """Fine-tune every TabPFN v2.6 weight on LoCalPFN-style local episodes.
 
@@ -163,6 +203,7 @@ class LocalFinetunedTabPFNClassifier:
         self.context_batch_size = context_batch_size
         self.random_state = random_state
         self.eval_metric = eval_metric
+        self.use_activation_checkpointing = use_activation_checkpointing
         self.context_size_: int | None = None
         self.train_query_size_: int | None = None
         self._sampler: LocalEpisodeSampler | None = None
@@ -458,13 +499,23 @@ class LocalFinetunedTabPFNClassifier:
             finetuned_base.get_preprocessed_dataset_chunks
         )
         with _replace_tabpfn_dataset_builder(local_builder):
-            self.delegate.fit(
-                X_train_model,
-                y_train,
-                X_val=X_val_model,
-                y_val=y_val,
-                output_dir=output_dir,
-            )
+            if self.use_activation_checkpointing:
+                with _backport_v26_activation_checkpointing():
+                    self.delegate.fit(
+                        X_train_model,
+                        y_train,
+                        X_val=X_val_model,
+                        y_val=y_val,
+                        output_dir=output_dir,
+                    )
+            else:
+                self.delegate.fit(
+                    X_train_model,
+                    y_train,
+                    X_val=X_val_model,
+                    y_val=y_val,
+                    output_dir=output_dir,
+                )
         return self
 
     def predict_proba_local(

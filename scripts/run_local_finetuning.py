@@ -197,6 +197,11 @@ def _fine_tuning_configuration(args: argparse.Namespace) -> dict[str, object]:
         "n_estimators_validation": args.n_estimators_validation,
         "n_estimators_final": args.n_estimators_final,
         "activation_checkpointing": args.activation_checkpointing,
+        "compatibility_backports": (
+            ["tabpfn-8.2.0-v2.6-activation-checkpoint-container"]
+            if args.activation_checkpointing
+            else []
+        ),
         "fixed_preprocessing_seed": args.fixed_preprocessing_seed,
         "save_checkpoint_interval": (
             None if args.save_checkpoint_interval == 0 else args.save_checkpoint_interval
