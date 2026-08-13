@@ -163,7 +163,7 @@ for fold in sorted(records_by_fold):
         best_epoch = checkpoint.get("epoch")
         validation_auc = checkpoint.get("roc_auc")
         validation_log_loss = checkpoint.get("log_loss")
-        checkpoint_label = str(best_path)
+        checkpoint_label = "checkpoint_800_best.pth"
         del checkpoint
         gc.collect()
     elif checkpoint_directory.exists():

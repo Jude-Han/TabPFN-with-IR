@@ -1,0 +1,114 @@
+{
+  "benchmark": "openml-cc18-localpfn-splits",
+  "description": "Twelve moderate-runtime OpenML-CC18 datasets",
+  "protocol": {
+    "suite_id": 99,
+    "number_of_splits": 10,
+    "train_fraction": 0.8,
+    "validation_fraction": 0.1,
+    "test_fraction": 0.1,
+    "splitter": "StratifiedKFold",
+    "shuffle": true,
+    "split_seed": 0,
+    "validation_fold": "(test_fold + 1) % 10",
+    "primary_metric": "roc_auc_ovo"
+  },
+  "datasets": [
+    {
+      "task_id": 14952,
+      "dataset_id": 4534,
+      "version": 1,
+      "name": "PhishingWebsites",
+      "target": "Result",
+      "n_instances": 11055
+    },
+    {
+      "task_id": 32,
+      "dataset_id": 32,
+      "version": 1,
+      "name": "pendigits",
+      "target": "class",
+      "n_instances": 10992
+    },
+    {
+      "task_id": 14969,
+      "dataset_id": 4538,
+      "version": 1,
+      "name": "GesturePhaseSegmentationProcessed",
+      "target": "Phase",
+      "n_instances": 9873
+    },
+    {
+      "task_id": 2074,
+      "dataset_id": 182,
+      "version": 1,
+      "name": "satimage",
+      "target": "class",
+      "n_instances": 6430
+    },
+    {
+      "task_id": 43,
+      "dataset_id": 44,
+      "version": 1,
+      "name": "spambase",
+      "target": "class",
+      "n_instances": 4601
+    },
+    {
+      "task_id": 3,
+      "dataset_id": 3,
+      "version": 1,
+      "name": "kr-vs-kp",
+      "target": "class",
+      "n_instances": 3196
+    },
+    {
+      "task_id": 167141,
+      "dataset_id": 40701,
+      "version": 1,
+      "name": "churn",
+      "target": "class",
+      "n_instances": 5000
+    },
+    {
+      "task_id": 9960,
+      "dataset_id": 1497,
+      "version": 1,
+      "name": "wall-robot-navigation",
+      "target": "Class",
+      "n_instances": 5456
+    },
+    {
+      "task_id": 3917,
+      "dataset_id": 1067,
+      "version": 1,
+      "name": "kc1",
+      "target": "defects",
+      "n_instances": 2109
+    },
+    {
+      "task_id": 146822,
+      "dataset_id": 40984,
+      "version": 3,
+      "name": "segment",
+      "target": "class",
+      "n_instances": 2310
+    },
+    {
+      "task_id": 45,
+      "dataset_id": 46,
+      "version": 1,
+      "name": "splice",
+      "target": "Class",
+      "n_instances": 3190
+    },
+    {
+      "task_id": 146820,
+      "dataset_id": 40983,
+      "version": 2,
+      "name": "wilt",
+      "target": "class",
+      "n_instances": 4839
+    }
+  ]
+}
