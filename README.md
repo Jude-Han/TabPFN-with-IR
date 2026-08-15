@@ -474,6 +474,75 @@ depends strongly on `k`, `train_query_size`, the episode batch, and the number o
 estimators. Activation checkpointing is enabled by default so smaller GPUs can often run reduced
 configurations.
 
+When several datasets must be fine-tuned, prefer dataset-level process sharding: one independent
+worker is pinned to each physical GPU, and the selected dataset identifiers are assigned
+round-robin. Each worker processes all of its dataset folds sequentially and writes a separate
+resumable JSONL file and log. This keeps unrelated dataset/fold models isolated and normally gives
+better throughput than using four GPUs for one small fold.
+
+The following command distributes the 30 datasets in the TabPFN-v1 manifest across four GPUs and
+runs all ten LoCalPFN-style folds. It uses the validation-log-loss setting demonstrated on
+MiceProtein; choose the global learning rate using validation experiments on several representative
+datasets before treating this as a final benchmark configuration.
+
+```bash
+GPU_IDS="0 1 2 3" \
+PARALLEL_SHARDS=4 \
+BENCHMARK=openml-cc18 \
+MANIFEST=data/manifests/tabpfn_v1_30.json \
+FOLDS="0 1 2 3 4 5 6 7 8 9" \
+CONTEXT_SIZE=localpfn \
+TRAIN_QUERY_SIZE=500 \
+LEARNING_RATE=3e-5 \
+WEIGHT_DECAY=0.01 \
+SCHEDULER=cosine \
+GRAD_CLIP_VALUE=1.0 \
+EVAL_METRIC=log_loss \
+EPOCHS=30 \
+EARLY_STOPPING_PATIENCE=8 \
+MIN_DELTA=1e-8 \
+N_ESTIMATORS_FINETUNE=2 \
+N_ESTIMATORS_VALIDATION=2 \
+N_ESTIMATORS_FINAL=2 \
+SAVE_CHECKPOINT_INTERVAL=5 \
+CHECKPOINT_TAG=v26-logloss-lr3e-5 \
+OUTPUT_ROOT=outputs/local-finetuning/v26-logloss-30datasets \
+CHECKPOINT_ROOT=outputs/local-finetuning/checkpoints-v26-logloss-30datasets \
+scripts/run_parallel_local_finetuning.sh
+```
+
+Omit `DATASET_IDS` to use every dataset in `MANIFEST`, as above. To run a selected subset, add a
+space-separated list such as `DATASET_IDS="31 40966 40975"`. Preview the exact allocation without
+launching CUDA processes:
+
+```bash
+DRY_RUN=1 \
+GPU_IDS="0 1 2 3" \
+PARALLEL_SHARDS=4 \
+DATASET_IDS="31 40966 40975 40982 40994" \
+scripts/run_parallel_local_finetuning.sh
+```
+
+Every worker sees only its assigned physical GPU through `CUDA_VISIBLE_DEVICES` and therefore uses
+`DEVICE=cuda` internally. Result and log files have names such as
+`results-shard-0-gpu-0.jsonl` and `logs/shard-0-gpu-0.log`; checkpoint paths remain collision-safe
+because they include benchmark, dataset, fold, tag, and configuration hash. Re-running the same
+command resumes interrupted numbered checkpoints and skips successful JSONL records within each
+shard.
+
+Before the first four-worker launch, cache the TabPFN checkpoint and OpenML datasets with a
+single-process smoke run. Concurrent first-time downloads by four workers can otherwise contend for
+the same cache. Monitor all workers with:
+
+```bash
+tail -f outputs/local-finetuning/v26-logloss-30datasets/logs/*.log
+nvidia-smi -l 2
+```
+
+`SAVE_CHECKPOINT_INTERVAL=5` is a compromise for a 300-fold run. Use `1` for a short diagnostic,
+but it can consume substantial disk space. `TENSORBOARD=1` may also be supplied; each dataset/fold
+writes events under its own checkpoint directory.
+
 Fine-tuning uses data-distributed training rather than the inference-only `--devices` option. Launch
 one fold with `torchrun`:
 
