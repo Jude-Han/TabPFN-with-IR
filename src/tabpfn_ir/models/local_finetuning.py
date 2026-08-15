@@ -172,6 +172,7 @@ class LocalFinetunedTabPFNClassifier:
         save_checkpoint_interval: int | None = 10,
         use_fixed_preprocessing_seed: bool = True,
         eval_metric: Literal["roc_auc", "log_loss"] = "roc_auc",
+        experiment_logger: Any | None = None,
         extra_classifier_kwargs: dict[str, Any] | None = None,
     ) -> None:
         _require_supported_tabpfn()
@@ -203,6 +204,7 @@ class LocalFinetunedTabPFNClassifier:
         self.context_batch_size = context_batch_size
         self.random_state = random_state
         self.eval_metric = eval_metric
+        self.experiment_logger = experiment_logger
         self.use_activation_checkpointing = use_activation_checkpointing
         self.context_size_: int | None = None
         self.train_query_size_: int | None = None
@@ -238,6 +240,7 @@ class LocalFinetunedTabPFNClassifier:
             use_fixed_preprocessing_seed=use_fixed_preprocessing_seed,
             extra_classifier_kwargs=copy.deepcopy(extra_classifier_kwargs),
             eval_metric=eval_metric,
+            experiment_logger=experiment_logger,
             model_version=ModelVersion.V2_6,
         )
         # TabPFN 8.2 hard-codes one meta-dataset per step in the stock wrapper.
@@ -252,10 +255,35 @@ class LocalFinetunedTabPFNClassifier:
             self._evaluate_with_local_contexts,
             self.delegate,
         )
+        self._delegate_log_epoch_evaluation = self.delegate._log_epoch_evaluation
+        self.delegate._log_epoch_evaluation = MethodType(  # type: ignore[method-assign]
+            self._log_epoch_evaluation_with_initial_metric,
+            self.delegate,
+        )
         self.delegate._setup_inference_model = MethodType(  # type: ignore[method-assign]
             self._capture_final_inference_config,
             self.delegate,
         )
+
+    def _log_epoch_evaluation_with_initial_metric(
+        self,
+        delegate: Any,
+        epoch: int,
+        eval_result: Any,
+        mean_train_loss: float | None,
+    ) -> None:
+        """Preserve TabPFN logging and expose its otherwise-unlogged initial metric."""
+
+        del delegate
+        self._delegate_log_epoch_evaluation(epoch, eval_result, mean_train_loss)
+        if epoch == -1 and self.experiment_logger is not None:
+            metrics: dict[str, float] = {
+                "train/epoch": -1.0,
+                "val/primary_metric": float(eval_result.primary),
+            }
+            for name, value in eval_result.secondary.items():
+                metrics[f"val/{name}"] = float(value)
+            self.experiment_logger.log_epoch(metrics, step=0)
 
     def _forward_with_local_batch_loss(self, delegate: Any, batch: Any) -> Any:
         import torch

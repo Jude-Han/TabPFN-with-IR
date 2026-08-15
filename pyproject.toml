@@ -22,6 +22,9 @@ benchmark = [
     "PyYAML>=6,<7",
     "tabpfn==8.2.0",
 ]
+tracking = [
+    "tensorboard>=2.16,<3",
+]
 dev = [
     "pytest>=8,<10",
 ]

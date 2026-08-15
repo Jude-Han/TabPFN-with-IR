@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import warnings
 from dataclasses import asdict
 from pathlib import Path
 from time import perf_counter
@@ -24,6 +25,11 @@ from run_benchmark import (
 from tabpfn_ir.data import TabularPreprocessor
 from tabpfn_ir.environment import load_project_dotenv
 from tabpfn_ir.evaluation import classification_metrics
+from tabpfn_ir.finetuning_logging import (
+    CompositeFinetuningLogger,
+    JsonlFinetuningLogger,
+    TensorBoardFinetuningLogger,
+)
 from tabpfn_ir.models import LocalFinetunedTabPFNClassifier
 from tabpfn_ir.retrieval import resolve_context_specification
 
@@ -88,6 +94,18 @@ def parse_args() -> argparse.Namespace:
         default=10,
         help="Epoch interval; use 0 to save only improving best checkpoints.",
     )
+    parser.add_argument(
+        "--training-history",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Write per-step and per-epoch metrics beside each checkpoint directory.",
+    )
+    parser.add_argument(
+        "--tensorboard",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Also write TensorBoard event files (requires the tracking extra).",
+    )
     parser.add_argument("--retrieval-batch-size", type=int, default=512)
     parser.add_argument("--context-batch-size", type=int, default=32)
     parser.add_argument("--device", default="cuda")
@@ -149,6 +167,22 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise ValueError("--min-delta must be non-negative.")
     if args.save_checkpoint_interval < 0:
         raise ValueError("--save-checkpoint-interval must be non-negative.")
+    if args.save_checkpoint_interval == 0:
+        warnings.warn(
+            "--save-checkpoint-interval=0 disables periodic .pth files. A best "
+            "checkpoint is saved only if validation improves over the untouched "
+            "v2.6 model, so an empty checkpoint directory can be expected.",
+            UserWarning,
+            stacklevel=2,
+        )
+    if args.learning_rate >= 1e-3:
+        warnings.warn(
+            f"learning_rate={args.learning_rate:g} is unusually large for full-weight "
+            "TabPFN v2.6 transfer. The LoCalPFN paper's 0.01 setting can destroy the "
+            "pretrained solution within a few optimizer steps; start near 1e-5.",
+            UserWarning,
+            stacklevel=2,
+        )
     if args.limit is not None and args.limit <= 0:
         raise ValueError("--limit must be positive.")
     if args.seed < 0 or args.split_seed < 0:
@@ -312,6 +346,34 @@ def run_fold(
         maximum=args.maximum_context_size,
     )
 
+    is_main_process = int(os.environ.get("LOCAL_RANK", "0")) == 0
+    history_path = checkpoint_dir / "training_history.jsonl"
+    summary_path = checkpoint_dir / "training_summary.json"
+    tensorboard_dir = checkpoint_dir / "tensorboard"
+    experiment_loggers = []
+    if is_main_process and args.training_history:
+        experiment_loggers.append(
+            JsonlFinetuningLogger(
+                history_path,
+                metadata={
+                    "benchmark": fold_input.benchmark,
+                    "dataset_key": fold_input.dataset_key,
+                    "dataset_name": fold_input.dataset_name,
+                    "fold": fold_input.fold,
+                    "checkpoint_directory": str(checkpoint_dir),
+                    "requested_context_size": int(context_size),
+                    "requested_train_query_size": int(args.train_query_size),
+                    "steps_per_epoch": int(args.steps_per_epoch),
+                    "episode_batch_size": int(args.episode_batch_size),
+                },
+            )
+        )
+    if is_main_process and args.tensorboard:
+        experiment_loggers.append(TensorBoardFinetuningLogger(tensorboard_dir))
+    experiment_logger = (
+        CompositeFinetuningLogger(experiment_loggers) if experiment_loggers else None
+    )
+
     finetuner = LocalFinetunedTabPFNClassifier(
         context_size=context_size,
         train_query_size=args.train_query_size,
@@ -340,6 +402,7 @@ def run_fold(
         ),
         use_fixed_preprocessing_seed=args.fixed_preprocessing_seed,
         eval_metric=args.eval_metric,
+        experiment_logger=experiment_logger,
     )
     started = perf_counter()
     finetuner.fit(
@@ -353,8 +416,29 @@ def run_fold(
     )
     fine_tuning_seconds = perf_counter() - started
 
-    if int(os.environ.get("LOCAL_RANK", "0")) != 0:
+    if not is_main_process:
         return None
+
+    checkpoint_files = sorted(checkpoint_dir.glob("checkpoint_*.pth"))
+    best_checkpoint_files = [path for path in checkpoint_files if path.stem.endswith("_best")]
+    if not checkpoint_files:
+        interval_explanation = (
+            "periodic saving was disabled"
+            if args.save_checkpoint_interval == 0
+            else "training stopped before the next periodic save"
+        )
+        validation_explanation = (
+            "no validation epoch beat the initial v2.6 model, so TabPFN restored "
+            "the in-memory initial weights for final inference"
+            if args.early_stopping
+            else "best-checkpoint selection and initial-weight restoration were disabled"
+        )
+        warnings.warn(
+            f"No .pth file was produced in {checkpoint_dir}: {interval_explanation}, "
+            f"and {validation_explanation}.",
+            UserWarning,
+            stacklevel=2,
+        )
 
     prediction = finetuner.predict_proba_local(
         test_views.model,
@@ -376,6 +460,13 @@ def run_fold(
         "actual_train_query_size": finetuner.train_query_size_,
         "preprocessing_seconds": preprocessing_seconds,
         "fine_tuning_seconds": fine_tuning_seconds,
+        "training_history_path": str(history_path) if args.training_history else None,
+        "training_summary_path": str(summary_path) if args.training_history else None,
+        "tensorboard_log_directory": str(tensorboard_dir) if args.tensorboard else None,
+        "saved_checkpoint_count": len(checkpoint_files),
+        "saved_checkpoint_files": [str(path) for path in checkpoint_files],
+        "has_saved_best_checkpoint": bool(best_checkpoint_files),
+        "best_checkpoint_path": (str(best_checkpoint_files[-1]) if best_checkpoint_files else None),
         "index_seconds": prediction.index_seconds,
         "retrieval_seconds": prediction.retrieval_seconds,
         "prediction_seconds": prediction.prediction_seconds,

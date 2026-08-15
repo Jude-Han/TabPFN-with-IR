@@ -521,6 +521,8 @@ fold only, then run the test fold once.
 | `--retrieval-batch-size` | `512` | CPU FAISS query chunking during episode, validation, and test retrieval. | It normally affects speed, not neighbors. Lower it only for host-memory pressure. |
 | `--context-batch-size` | `32` | Number of shape/class-compatible query contexts fused during local validation/test inference. | Try `8, 16, 32, 64`. Lower after inference OOM; changing it should not change intended predictions. |
 | `--save-checkpoint-interval` | `10` | Interval checkpoint cadence. `0` disables interval checkpoints, while improving best checkpoints remain enabled when early stopping is enabled. | Use `1` for maximum interruption recovery, at substantial disk cost. The official resume path resumes numbered interval checkpoints, not a best-only checkpoint. |
+| `--training-history` | enabled | Writes every optimizer-step loss/LR, the true epoch mean loss, and validation metrics to `training_history.jsonl`. | Leave enabled. Use `--no-training-history` only when per-step audit data is explicitly unwanted. |
+| `--tensorboard` | disabled | Mirrors the same scalars into TensorBoard event files. | Enable with `TENSORBOARD=1` after installing the `tracking` extra. JSONL logging remains the dependency-free source of record. |
 | `--time-limit` | none | Wall-clock training limit in seconds. | Use for managed clusters. The loop stops before starting an epoch that is unlikely to finish within the remaining budget. |
 | `--seed` | `0` | Anchor sampling, TabPFN initialization/preprocessing, and data-loader order. | Run at least three seeds for a stability study after choosing hyperparameters. Do not use test performance to select a seed. |
 
@@ -568,6 +570,98 @@ not manually mix checkpoints produced by different hyperparameters.
 On a first run, TabPFN may warn that the output directory exists but contains no checkpoint. This is
 expected: the runner created the directory, TabPFN found nothing to resume, and training starts from
 the original v2.6 checkpoint at epoch zero. It is unrelated to the activation-checkpointing error.
+
+Each checkpoint directory now also contains `training_history.jsonl` and
+`training_summary.json`. The history separates the noisy loss of each optimizer step from the true
+mean loss over an epoch. The summary reports the initial validation metric, best validation metric,
+best epoch, and whether training ever improved over the untouched v2.6 model. The final result JSONL
+also records the number and names of `.pth` files and the best-checkpoint path, if one exists.
+
+#### Diagnosing flat loss and empty checkpoint directories
+
+The `loss=...` value at the right edge of tqdm is the most recent local episode batch, not an epoch
+average. Different anchors generate different kNN neighborhoods, so this number is inherently noisy
+and need not decrease monotonically. Inspect `train/mean_loss` in the history before concluding that
+optimization is stalled.
+
+There is a more serious and recognizable failure mode with the literal LoCalPFN learning rate. The
+paper's `learning_rate=0.01` belonged to an older TabPFN checkpoint/training stack. When all weights
+of the already-strong v2.6 checkpoint are updated at that rate, the first few steps can erase the
+pretrained solution. Cross-entropy then settles near `log(C)`, where `C` is the class count: this is
+the loss of uniform class probabilities. For example, an eight-class loss near `log(8)=2.079` is
+model collapse, not evidence of successful convergence. The runner now emits a warning for learning
+rates at or above `1e-3`.
+
+An empty checkpoint directory is also possible by design:
+
+1. `SAVE_CHECKPOINT_INTERVAL=0` maps to `save_checkpoint_interval=None`, so periodic `.pth` files are
+   disabled.
+2. TabPFN writes `checkpoint_<train-size>_best.pth` only when a post-update validation epoch improves
+   over the initial, untouched v2.6 model.
+3. If no epoch improves, no best file is written and early stopping restores the initial weights in
+   memory for final inference.
+
+Consequently, a prior run with interval saving disabled and no `_best.pth` did not produce reusable
+fine-tuned weights. Its final test score can still be valid for local-kNN-context inference, but the
+weights used for that score are the restored pretrained weights. A numbered interval checkpoint
+proves that optimizer state was saved; it does **not** prove that the checkpoint is better. Use the
+validation-selected `_best.pth` and `training_summary.json` for that conclusion.
+
+For a fresh v2.6 stability run, use a new output file and checkpoint tag so `--resume` does not skip
+the old completed record:
+
+```bash
+DATASET_IDS=40966 \
+FOLDS=0 \
+DEVICE=cuda \
+CONTEXT_SIZE=localpfn \
+TRAIN_QUERY_SIZE=500 \
+LEARNING_RATE=1e-5 \
+SCHEDULER=cosine \
+GRAD_CLIP_VALUE=1.0 \
+EPOCHS=30 \
+EARLY_STOPPING_PATIENCE=8 \
+MIN_DELTA=1e-4 \
+SAVE_CHECKPOINT_INTERVAL=1 \
+CHECKPOINT_TAG=miceprotein-v26-stable-lr1e-5 \
+OUTPUT=outputs/local-finetuning/miceprotein-v26-stable-lr1e-5.jsonl \
+scripts/run_local_finetuning.sh
+```
+
+Use interval `1` for this diagnosis so every epoch is recoverable. After stability is established,
+use `5` or `10` to reduce disk consumption. Select the learning rate on validation data from
+`3e-6`, `1e-5`, and `3e-5`; do not select it by the test score.
+
+The dependency-free plotter creates an SVG from the new history:
+
+```bash
+python scripts/plot_finetuning_history.py \
+  outputs/local-finetuning/checkpoints/<benchmark>/<dataset>/fold-0/<run>/training_history.jsonl \
+  --output outputs/local-finetuning/fold-0-learning-curve.svg
+```
+
+It can also diagnose a legacy terminal log, with the limitation that only tqdm's displayed batch
+loss—not the true historical epoch mean—is available:
+
+```bash
+python scripts/plot_finetuning_history.py \
+  outputs/local-finetuning/paper-literal-resume-shard-2.log \
+  --dataset-id 40966 \
+  --fold 5 \
+  --output outputs/local-finetuning/miceprotein-fold5-paper-literal-loss.svg
+```
+
+For live monitoring, install TensorBoard and enable its logger:
+
+```bash
+pip install -e '.[benchmark,tracking]'
+TENSORBOARD=1 SAVE_CHECKPOINT_INTERVAL=1 scripts/run_local_finetuning.sh
+tensorboard --logdir outputs/local-finetuning/checkpoints
+```
+
+Open the URL printed by TensorBoard and compare `train/loss`, `train/mean_loss`, `train/lr`, and the
+validation curves. JSONL history continues to be written even if the optional TensorBoard backend
+cannot start.
 
 Programmatic use is available through `LocalFinetunedTabPFNClassifier`. It deliberately requires
 both aligned feature views and an explicit validation fold:

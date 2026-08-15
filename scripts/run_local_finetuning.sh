@@ -46,6 +46,12 @@ fi
 if [[ "${FIXED_PREPROCESSING_SEED:-1}" == "0" ]]; then
   args+=(--no-fixed-preprocessing-seed)
 fi
+if [[ "${TRAINING_HISTORY:-1}" == "0" ]]; then
+  args+=(--no-training-history)
+fi
+if [[ "${TENSORBOARD:-0}" == "1" ]]; then
+  args+=(--tensorboard)
+fi
 if [[ -n "${TIME_LIMIT:-}" ]]; then
   args+=(--time-limit "${TIME_LIMIT}")
 fi
