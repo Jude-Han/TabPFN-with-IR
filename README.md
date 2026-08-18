@@ -281,6 +281,41 @@ kNN context-size selection over several values on the validation split:
 K_VALUES="32 64 128 256 512 1000 localpfn" scripts/run_knn_sweep.sh 31 class
 ```
 
+### Full-context imitation curve
+
+Before selecting one context budget by validation performance, measure how closely nested kNN
+contexts reproduce the predictive distribution of full-context TabPFN v2.6:
+
+```bash
+python scripts/run_context_imitation_curve.py \
+  --dataset-id 31 \
+  --target class \
+  --fold 0 \
+  --evaluation-split validation \
+  --max-query-samples 256 \
+  --k-values 16 32 64 128 256 512 1000 \
+  --tv-tolerance 0.05 \
+  --device cuda \
+  --output outputs/credit-g-fold0-imitation.json
+```
+
+The retriever performs one exact search up to the largest bounded `k`; every smaller context is an
+exact prefix of that ranking. The experiment appends the complete training fold as the reference
+point and reports, for every `k`:
+
+- the mean and 50th/90th/95th/99th percentiles of predictive total-variation distance from full;
+- agreement with the full-context predicted class;
+- validation metrics and their differences from full;
+- prediction time; and
+- the fraction of queries whose current and all larger evaluated contexts satisfy the imitation
+  criterion.
+
+The command writes three artifacts: the complete JSON result, a compact `*.summary.csv` curve, and
+a `*.queries.csv` file containing each query's minimum stable context size. The pilot defaults to
+256 stratified validation queries and one TabPFN estimator to keep the first run inexpensive. Pass
+`--max-query-samples 0 --inference-profile default` for a complete, ensemble-based confirmation.
+Choose `k` only on the validation split, then rerun the chosen rule once on the test split.
+
 `localpfn` resolves to `min(int(10 * sqrt(n_train)), MAXIMUM_CONTEXT_SIZE)`, where the default
 maximum is `1000`. A budget larger than the training fold is capped at `n_train`. Retrieval uses
 `faiss.IndexFlatL2` and processes query searches in batches of 512.
