@@ -10,6 +10,7 @@ from typing import Any, Protocol
 import numpy as np
 
 from tabpfn_ir.environment import load_project_dotenv
+from tabpfn_ir.models.configuration import validate_model_version
 
 
 class ProbabilisticClassifier(Protocol):
@@ -40,10 +41,10 @@ class ContextualTabPFNClassifier:
     """Run frozen TabPFN inference over retrieved, query-specific contexts.
 
     Full and global-random contexts are fitted once and shared across their query
-    batches. On TabPFN 8.2, compatible query-specific contexts are fused with
-    ``predict_proba_batched`` instead of launching one model forward per query.
-    TabPFN itself remains frozen: context fitting supplies ICL examples and does
-    not perform supervised gradient updates.
+    batches. Modern TabPFN versions fuse compatible query-specific contexts with
+    ``predict_proba_batched``. The isolated v1 backend automatically falls back
+    to sequential context inference. TabPFN itself remains frozen: context
+    fitting supplies ICL examples and does not perform supervised gradient updates.
     """
 
     def __init__(
@@ -52,20 +53,24 @@ class ContextualTabPFNClassifier:
         estimator_factory: Callable[[], ProbabilisticClassifier] | None = None,
         tabpfn_kwargs: dict[str, Any] | None = None,
         model_version: str = "v2.6",
+        v1_runtime_path: str | None = None,
+        v1_checkpoint_path: str | None = None,
         context_batch_size: int = 32,
         use_batched_contexts: bool = True,
     ) -> None:
-        if model_version != "v2.6":
-            raise ValueError("This benchmark currently pins --model-version v2.6.")
+        validate_model_version(model_version)
         if context_batch_size <= 0:
             raise ValueError("context_batch_size must be positive.")
         self._estimator_factory = estimator_factory
         self._tabpfn_kwargs = dict(tabpfn_kwargs or {})
         if "model_path" in self._tabpfn_kwargs:
             raise ValueError(
-                "model_path cannot override the benchmark's pinned TabPFN v2.6 checkpoint."
+                "model_path cannot override the selected official TabPFN checkpoint. "
+                "Use v1_checkpoint_path for an original-v1 .cpkt file."
             )
         self.model_version = model_version
+        self.v1_runtime_path = v1_runtime_path
+        self.v1_checkpoint_path = v1_checkpoint_path
         self.context_batch_size = context_batch_size
         self.use_batched_contexts = use_batched_contexts
         self.last_inference_stats = ContextInferenceStats()
@@ -76,12 +81,20 @@ class ContextualTabPFNClassifier:
         # Also support package users who instantiate the adapter without a CLI.
         # Exported variables remain authoritative because override=False.
         load_project_dotenv(override=False)
+        if self.model_version == "v1":
+            from tabpfn_ir.models.tabpfn_v1 import LegacyTabPFNClassifier
+
+            return LegacyTabPFNClassifier(
+                runtime_path=self.v1_runtime_path,
+                checkpoint_path=self.v1_checkpoint_path,
+                **self._tabpfn_kwargs,
+            )
         try:
             from tabpfn import TabPFNClassifier
             from tabpfn.constants import ModelVersion
         except ImportError as exc:  # pragma: no cover - optional dependency
             raise ImportError(
-                "TabPFN support is optional. Install the project with "
+                "Modern TabPFN support is optional. Install the project with "
                 "`pip install -e '.[benchmark]'`."
             ) from exc
         selected_devices = self._tabpfn_kwargs.get("device")
@@ -95,10 +108,20 @@ class ContextualTabPFNClassifier:
                     "`pip install --upgrade 'tabpfn==8.2.0'`."
                 ) from exc
             infer_devices(selected_devices)
+        selected_version = {
+            "v2.6": ModelVersion.V2_6,
+            "v3": ModelVersion.V3,
+        }[self.model_version]
         return TabPFNClassifier.create_default_for_version(
-            ModelVersion.V2_6,
+            selected_version,
             **self._tabpfn_kwargs,
         )
+
+    @staticmethod
+    def _close_estimator(estimator: ProbabilisticClassifier) -> None:
+        close = getattr(estimator, "close", None)
+        if callable(close):
+            close()
 
     @staticmethod
     def _align_probabilities(
@@ -151,7 +174,7 @@ class ContextualTabPFNClassifier:
     ) -> int:
         """Fuse shape- and class-compatible contexts in bounded batches."""
 
-        predict_batched = getattr(estimator, "predict_proba_batched")
+        predict_batched = estimator.predict_proba_batched
         compatible_groups: dict[
             tuple[int, int, tuple[object, ...]],
             list[tuple[np.ndarray, list[int], np.ndarray]],
@@ -247,34 +270,37 @@ class ContextualTabPFNClassifier:
         used_batched_inference = False
         if multi_class_contexts:
             estimator = self._new_estimator()
-            predict_batched = getattr(estimator, "predict_proba_batched", None)
-            can_batch = (
-                self.use_batched_contexts
-                and len(multi_class_contexts) > 1
-                and callable(predict_batched)
-            )
-            if can_batch:
-                context_batches = self._predict_contexts_batched(
-                    estimator=estimator,
-                    contexts=multi_class_contexts,
-                    X_train=X_train,
-                    y_train=y_train,
-                    X_query=X_query,
-                    global_classes=global_classes,
-                    output=output,
+            try:
+                predict_batched = getattr(estimator, "predict_proba_batched", None)
+                can_batch = (
+                    self.use_batched_contexts
+                    and len(multi_class_contexts) > 1
+                    and callable(predict_batched)
                 )
-                batched_contexts = len(multi_class_contexts)
-                used_batched_inference = True
-            else:
-                sequential_contexts = self._predict_contexts_sequentially(
-                    estimator=estimator,
-                    contexts=multi_class_contexts,
-                    X_train=X_train,
-                    y_train=y_train,
-                    X_query=X_query,
-                    global_classes=global_classes,
-                    output=output,
-                )
+                if can_batch:
+                    context_batches = self._predict_contexts_batched(
+                        estimator=estimator,
+                        contexts=multi_class_contexts,
+                        X_train=X_train,
+                        y_train=y_train,
+                        X_query=X_query,
+                        global_classes=global_classes,
+                        output=output,
+                    )
+                    batched_contexts = len(multi_class_contexts)
+                    used_batched_inference = True
+                else:
+                    sequential_contexts = self._predict_contexts_sequentially(
+                        estimator=estimator,
+                        contexts=multi_class_contexts,
+                        X_train=X_train,
+                        y_train=y_train,
+                        X_query=X_query,
+                        global_classes=global_classes,
+                        output=output,
+                    )
+            finally:
+                self._close_estimator(estimator)
 
         self.last_inference_stats = ContextInferenceStats(
             unique_contexts=len(grouped_queries),

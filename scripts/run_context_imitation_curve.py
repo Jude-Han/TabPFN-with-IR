@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure how nested kNN contexts imitate full-context TabPFN v2.6."""
+"""Measure how nested kNN contexts imitate full-context TabPFN."""
 
 from __future__ import annotations
 
@@ -17,7 +17,9 @@ from tabpfn_ir.data import TabularPreprocessor, load_openml_dataset, localpfn_sp
 from tabpfn_ir.environment import load_project_dotenv
 from tabpfn_ir.evaluation import resolve_context_grid, run_full_context_imitation_curve
 from tabpfn_ir.models import (
+    LEGACY_TABPFN_VERSION,
     TABPFN_INFERENCE_PROFILES,
+    TABPFN_MODEL_VERSIONS,
     ContextualTabPFNClassifier,
     build_tabpfn_classifier_kwargs,
     resolve_n_estimators,
@@ -97,10 +99,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model-version",
-        choices=["v2.6"],
+        choices=TABPFN_MODEL_VERSIONS,
         default="v2.6",
-        help="Pinned checkpoint family; other TabPFN versions are intentionally rejected.",
+        help="TabPFN checkpoint family: original v1, v2.6, or v3.",
     )
+    parser.add_argument("--v1-runtime-path", type=Path)
+    parser.add_argument("--v1-checkpoint-path", type=Path)
     parser.add_argument("--context-batch-size", type=int, default=32)
     parser.add_argument("--disable-batched-contexts", action="store_true")
     parser.add_argument("--retrieval-query-batch-size", type=int, default=512)
@@ -338,6 +342,7 @@ def main() -> None:
 
     tabpfn_kwargs = build_tabpfn_classifier_kwargs(
         device=args.device,
+        model_version=args.model_version,
         devices=args.devices,
         ignore_pretraining_limits=args.ignore_pretraining_limits,
         fit_mode=args.fit_mode,
@@ -347,6 +352,12 @@ def main() -> None:
         predictor=ContextualTabPFNClassifier(
             tabpfn_kwargs=tabpfn_kwargs,
             model_version=args.model_version,
+            v1_runtime_path=(
+                str(args.v1_runtime_path) if args.v1_runtime_path else None
+            ),
+            v1_checkpoint_path=(
+                str(args.v1_checkpoint_path) if args.v1_checkpoint_path else None
+            ),
             context_batch_size=args.context_batch_size,
             use_batched_contexts=not args.disable_batched_contexts,
         ),
@@ -362,7 +373,7 @@ def main() -> None:
         auc_mode="ovo",
     )
     payload = {
-        "experiment": "tabpfn-v2.6-full-context-imitation-curve",
+        "experiment": f"tabpfn-{args.model_version}-full-context-imitation-curve",
         "dataset": {
             "id": dataset.dataset_id,
             "version": dataset.version,
@@ -393,11 +404,29 @@ def main() -> None:
         "tabpfn_configuration": {
             **tabpfn_kwargs,
             "model_version": args.model_version,
+            "legacy_tabpfn_package_version": (
+                LEGACY_TABPFN_VERSION if args.model_version == "v1" else None
+            ),
+            "v1_runtime_path": (
+                str(args.v1_runtime_path)
+                if args.model_version == "v1" and args.v1_runtime_path
+                else None
+            ),
+            "v1_checkpoint_path": (
+                str(args.v1_checkpoint_path)
+                if args.model_version == "v1" and args.v1_checkpoint_path
+                else None
+            ),
             "inference_profile": args.inference_profile,
             "context_batch_size": args.context_batch_size,
             "batched_contexts": not args.disable_batched_contexts,
         },
-        "software_versions": software_versions(),
+        "software_versions": {
+            **software_versions(),
+            "tabpfn-v1-runtime": (
+                LEGACY_TABPFN_VERSION if args.model_version == "v1" else None
+            ),
+        },
         "result": result,
     }
 

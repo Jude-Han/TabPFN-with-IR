@@ -9,6 +9,7 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 .venv/
+.tabpfn-v1-runtime/
 outputs/*
 !outputs/.gitkeep
 

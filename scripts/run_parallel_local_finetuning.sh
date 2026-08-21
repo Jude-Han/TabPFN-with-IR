@@ -13,12 +13,14 @@ else
   python_command="python"
 fi
 benchmark="${BENCHMARK:-openml-cc18}"
+model_version="${MODEL_VERSION:-v2.6}"
+model_version_slug="${model_version//./}"
 manifest="${MANIFEST:-${repository_dir}/data/manifests/tabpfn_v1_30.json}"
 tabzilla_root="${TABZILLA_ROOT:-}"
 gpu_ids_text="${GPU_IDS:-0 1 2 3}"
-output_root="${OUTPUT_ROOT:-${repository_dir}/outputs/local-finetuning/parallel-v26}"
+output_root="${OUTPUT_ROOT:-${repository_dir}/outputs/local-finetuning/parallel-${model_version_slug}}"
 checkpoint_root="${CHECKPOINT_ROOT:-${output_root}/checkpoints}"
-checkpoint_tag="${CHECKPOINT_TAG:-parallel-v26}"
+checkpoint_tag="${CHECKPOINT_TAG:-parallel-${model_version_slug}}"
 dry_run="${DRY_RUN:-0}"
 
 read -r -a gpu_ids <<< "${gpu_ids_text}"
@@ -93,6 +95,7 @@ done
 
 mkdir -p "${output_root}/logs" "${checkpoint_root}"
 echo "Fine-tuning benchmark: ${benchmark}"
+echo "Model version: ${model_version}"
 echo "Dataset count: ${#identifiers[@]}"
 echo "Parallel GPU workers: ${parallel_shards}"
 echo "Checkpoint root: ${checkpoint_root}"
@@ -125,6 +128,7 @@ for ((shard_index = 0; shard_index < parallel_shards; shard_index++)); do
   (
     export CUDA_VISIBLE_DEVICES="${gpu_id}"
     export BENCHMARK="${benchmark}"
+    export MODEL_VERSION="${model_version}"
     export DEVICE="cuda"
     export OUTPUT="${output}"
     export CHECKPOINT_ROOT="${checkpoint_root}"

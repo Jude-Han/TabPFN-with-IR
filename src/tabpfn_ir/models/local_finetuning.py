@@ -1,4 +1,4 @@
-"""LoCalPFN-style task fine-tuning on the pinned TabPFN v2.6 backbone.
+"""LoCalPFN-style task fine-tuning on modern TabPFN backbones.
 
 The public TabPFN 8.2 fine-tuner already owns the optimizer, mixed precision,
 checkpoint, resume, DDP, and early-stopping machinery. This module supplies a
@@ -23,6 +23,7 @@ from typing import Any, Literal
 
 import numpy as np
 
+from tabpfn_ir.models.configuration import validate_model_version
 from tabpfn_ir.models.tabpfn_adapter import (
     ContextInferenceStats,
     ContextualTabPFNClassifier,
@@ -136,7 +137,7 @@ def _backport_v26_activation_checkpointing(block_class: type[Any] | None = None)
 
 
 class LocalFinetunedTabPFNClassifier:
-    """Fine-tune every TabPFN v2.6 weight on LoCalPFN-style local episodes.
+    """Fine-tune modern TabPFN weights on LoCalPFN-style local episodes.
 
     This is a task-specific classifier, not a frozen ICL adapter. Its delegate is
     the official ``FinetunedTabPFNClassifier`` from TabPFN 8.2.0. Only dataset
@@ -148,6 +149,7 @@ class LocalFinetunedTabPFNClassifier:
         self,
         *,
         context_size: int,
+        model_version: str = "v2.6",
         train_query_size: int = 1000,
         steps_per_epoch: int = 30,
         episode_batch_size: int = 2,
@@ -176,6 +178,7 @@ class LocalFinetunedTabPFNClassifier:
         extra_classifier_kwargs: dict[str, Any] | None = None,
     ) -> None:
         _require_supported_tabpfn()
+        validate_model_version(model_version, finetuning=True)
         if context_size <= 0:
             raise ValueError("context_size must be positive.")
         if train_query_size <= 0:
@@ -190,13 +193,14 @@ class LocalFinetunedTabPFNClassifier:
             raise ValueError("random_state must be non-negative.")
         if extra_classifier_kwargs and "model_path" in extra_classifier_kwargs:
             raise ValueError(
-                "model_path cannot override the pinned Hugging Face TabPFN v2.6 checkpoint."
+                "model_path cannot override the selected official TabPFN checkpoint."
             )
 
         from tabpfn.constants import ModelVersion
         from tabpfn.finetuning.finetuned_classifier import FinetunedTabPFNClassifier
 
         self.requested_context_size = context_size
+        self.model_version = model_version
         self.requested_train_query_size = train_query_size
         self.steps_per_epoch = steps_per_epoch
         self.episode_batch_size = episode_batch_size
@@ -241,7 +245,10 @@ class LocalFinetunedTabPFNClassifier:
             extra_classifier_kwargs=copy.deepcopy(extra_classifier_kwargs),
             eval_metric=eval_metric,
             experiment_logger=experiment_logger,
-            model_version=ModelVersion.V2_6,
+            model_version={
+                "v2.6": ModelVersion.V2_6,
+                "v3": ModelVersion.V3,
+            }[model_version],
         )
         # TabPFN 8.2 hard-codes one meta-dataset per step in the stock wrapper.
         # The batched executor itself supports independent, equal-shaped datasets,
@@ -347,7 +354,7 @@ class LocalFinetunedTabPFNClassifier:
     ) -> tuple[np.ndarray, np.ndarray, ContextInferenceStats]:
         predictor = ContextualTabPFNClassifier(
             estimator_factory=lambda: self._new_context_estimator(estimator_config),
-            model_version="v2.6",
+            model_version=self.model_version,
             context_batch_size=self.context_batch_size,
             use_batched_contexts=True,
         )
@@ -527,7 +534,7 @@ class LocalFinetunedTabPFNClassifier:
             finetuned_base.get_preprocessed_dataset_chunks
         )
         with _replace_tabpfn_dataset_builder(local_builder):
-            if self.use_activation_checkpointing:
+            if self.use_activation_checkpointing and self.model_version == "v2.6":
                 with _backport_v26_activation_checkpointing():
                     self.delegate.fit(
                         X_train_model,

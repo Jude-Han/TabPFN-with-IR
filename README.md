@@ -102,7 +102,7 @@ will be evaluated alongside fixed context budgets so that methods can also be co
 
 ### 4. LoCalPFN-style kNN retrieval with task fine-tuning
 
-The `local-ft` workflow starts from the Hugging Face TabPFN v2.6 classifier checkpoint and performs
+The `local-ft` workflow starts from the selected official TabPFN v2.6 or v3 classifier checkpoint and performs
 end-to-end supervised fine-tuning for one dataset fold. Training examples are local meta-datasets:
 random anchor rows define exact-FAISS neighborhoods, each neighborhood is shuffled into a labeled
 context and a supervised query set, and cross-entropy is computed only on the query labels. AdamW
@@ -112,7 +112,7 @@ Validation and test inference use the same exact query-specific kNN path as the 
 baseline. The validation fold is used for early stopping; test labels are used only after the best
 weights have been selected. This implementation is LoCalPFN-style rather than a bit-for-bit
 reproduction: the original paper fine-tuned the older TabPFN architecture, whereas this repository
-deliberately adapts the pinned v2.6 checkpoint through TabPFN 8.2.0's official fine-tuning engine.
+adapts v2.6 or v3 through TabPFN 8.2.0's official fine-tuning engine.
 
 ## Proposed IR extension
 
@@ -352,7 +352,7 @@ CONTEXT_SIZE=128 EVALUATION_SPLIT=test scripts/run_random.sh 31 class
 The environment variables `FOLD`, `SPLIT_SEED`, `MAXIMUM_CONTEXT_SIZE`, `EXPERIMENT_SEED`,
 `DATASET_VERSION`, `PYTHON_COMMAND`, and `OUTPUT_DIR` can override the remaining defaults.
 
-### TabPFN v2.6 installation and authentication
+### TabPFN model installation and selection
 
 The benchmark environment is pinned to `tabpfn==8.2.0`. Upgrade the existing environment after
 installing a CUDA-compatible PyTorch build:
@@ -362,12 +362,38 @@ python -m pip install --upgrade -e ".[benchmark,dev]"
 python -c "from importlib.metadata import version; print(version('tabpfn'))"
 ```
 
-The second command must print `8.2.0`. TabPFN 8.x defaults to the v3 checkpoint, but this project
-deliberately constructs the classifier with
-`TabPFNClassifier.create_default_for_version(ModelVersion.V2_6, ...)`. Therefore the expected model
-download remains `tabpfn-v2.6-classifier-v2.6_default.ckpt`. The CLI also records
-`"model_version": "v2.6"` in every result, and currently rejects any other value to prevent an
-accidental backbone change during the retrieval comparison.
+The second command must print `8.2.0`. Frozen retrieval experiments accept
+`--model-version v1`, `v2.6`, or `v3` (and the shell wrappers expose the same choice through
+`MODEL_VERSION`). The modern choices use
+`TabPFNClassifier.create_default_for_version(ModelVersion.V2_6, ...)` or
+`ModelVersion.V3` explicitly, so a changing package default cannot silently alter an experiment.
+The resolved version is part of every result and resume key.
+
+The original v1 package has the same Python import name as modern TabPFN and cannot coexist in one
+interpreter. Install its isolated runtime and preserved 103 MB checkpoint once:
+
+```bash
+python scripts/setup_tabpfn_v1_runtime.py
+```
+
+The runtime is stored in the ignored `.tabpfn-v1-runtime` directory. It uses `tabpfn==0.1.10`, plus
+small compatibility shims for the pinned modern PyTorch and scikit-learn dependencies. A persistent
+worker loads the checkpoint once and services repeated contexts. v1 has no
+`predict_proba_batched`, so query-specific retrieval falls back to sequential inference. Optional
+locations can be supplied with `--v1-runtime-path` / `--v1-checkpoint-path` or the
+`TABPFN_V1_RUNTIME` / `TABPFN_V1_CHECKPOINT` environment variables.
+
+On macOS, kNN uses an exact batched NumPy L2 implementation because the available PyTorch and
+`faiss-cpu` wheels can crash when loaded into one process. Linux/CUDA benchmark servers continue to
+use `faiss.IndexFlatL2`; the retrieval metric and selected context size are unchanged.
+
+Examples:
+
+```bash
+MODEL_VERSION=v1 METHODS=knn INFERENCE_PROFILE=single-estimator scripts/run_tabpfn_v1_benchmark.sh
+MODEL_VERSION=v2.6 METHODS=knn scripts/run_tabpfn_v1_benchmark.sh
+MODEL_VERSION=v3 METHODS=knn scripts/run_tabpfn_v1_benchmark.sh
+```
 
 For headless servers, store the Prior Labs API key in the repository-root `.env`. The populated file
 is ignored by Git:
@@ -391,21 +417,21 @@ that a token is visible without printing the secret:
 python -c "from dotenv import load_dotenv; import os; load_dotenv(); print('TABPFN_TOKEN configured:', bool(os.getenv('TABPFN_TOKEN')))"
 ```
 
-The API key does not itself accept a model license. While logged into the same Prior Labs account,
-accept the `tabpfn_2_6` license at the URL reported by TabPFN. If the program still raises
+The API key does not itself accept a model license. For modern models, while logged into the same
+Prior Labs account, accept the selected model license at the URL reported by TabPFN. If the program still raises
 `TabPFNLicenseError: License not yet accepted` while the check above prints `True`, the account-side
 license acceptance is the remaining step rather than `.env` loading.
 
-The downloaded checkpoint and fine-tuned derivatives remain subject to the
-[TabPFN v2.6 model license](https://huggingface.co/Prior-Labs/tabpfn_2_6). Review that license before
-sharing checkpoints or using them outside the permitted research/internal-evaluation scope; the
-repository's source-code license does not replace the model license.
+Downloaded checkpoints and fine-tuned derivatives remain subject to their respective model
+licenses, including the [TabPFN v2.6 model license](https://huggingface.co/Prior-Labs/tabpfn_2_6)
+and the terms distributed with v3. Review the selected license before sharing checkpoints; the
+repository's source-code license does not replace a model license.
 
-## Local fine-tuning on TabPFN v2.6
+## Local fine-tuning on modern TabPFN
 
 ### What is implemented
 
-`scripts/run_local_finetuning.py` implements Method A: it retains the official TabPFN 8.2.0
+`scripts/run_local_finetuning.py` implements Method A for `v2.6` and `v3`: it retains the official TabPFN 8.2.0
 fine-tuning engine and changes the construction of its training meta-datasets. Consequently the
 official implementation still controls model loading, full-parameter AdamW optimization, automatic
 mixed precision on CUDA, gradient clipping, activation checkpointing, LR scheduling, DDP,
@@ -413,9 +439,9 @@ checkpoint saving/resume, and best-weight restoration. The project-specific adap
 episode sampling, the batched episode loss, exact-kNN validation, and exact-kNN test inference.
 
 The workflow is version-gated to `tabpfn==8.2.0` because it uses a narrow private data-construction
-hook that is not part of TabPFN's stable public API. It also passes `ModelVersion.V2_6` explicitly and
-rejects `model_path` overrides. This prevents a future TabPFN default or a different checkpoint from
-silently changing an experiment.
+hook that is not part of TabPFN's stable public API. It passes the selected `ModelVersion` explicitly
+and rejects `model_path` overrides. Original v1 is frozen-inference only because its historical
+package does not provide the modern fine-tuning engine.
 
 TabPFN 8.2.0 also has an activation-checkpointing defect specific to the v2.6 architecture: its
 forward pass removes a tensor from a mutable list, so backward recomputation receives an empty list
@@ -665,14 +691,14 @@ First choose a feasible `k` and query size, then tune the learning rate. Avoid a
 unless compute permits it. Keep split, seed set, training-step budget, and inference estimator count
 fixed while comparing configurations.
 
-### Paper settings versus v2.6 defaults
+### Paper settings versus modern TabPFN defaults
 
 The LoCalPFN paper used `k=min(10*sqrt(n_train),1000)`, 1,000 training query rows, local batch size
 two, AdamW with learning rate `0.01` and weight decay `0.01`, no warmup/scheduler, validation AUC
 evaluation every 30 gradient steps, and exact-kNN inference batches of 512. This implementation maps
 `k`, query size, batch size, weight decay, evaluation cadence, metric, and retrieval batch size
 directly. It intentionally changes the starting LR to `1e-5`, enables gradient clipping, activation
-checkpointing, and a warmup/cosine schedule because the fine-tuned backbone is TabPFN v2.6 rather
+checkpointing, and a warmup/cosine schedule because the fine-tuned backbone is modern TabPFN rather
 than the paper's old checkpoint. Use `--scheduler none` for the scheduler ablation, but do not copy
 the old `0.01` LR without a separate stability study.
 
@@ -691,12 +717,12 @@ not manually mix checkpoints produced by different hyperparameters.
 
 On a first run, TabPFN may warn that the output directory exists but contains no checkpoint. This is
 expected: the runner created the directory, TabPFN found nothing to resume, and training starts from
-the original v2.6 checkpoint at epoch zero. It is unrelated to the activation-checkpointing error.
+the selected checkpoint at epoch zero. It is unrelated to the activation-checkpointing error.
 
 Each checkpoint directory now also contains `training_history.jsonl` and
 `training_summary.json`. The history separates the noisy loss of each optimizer step from the true
 mean loss over an epoch. The summary reports the initial validation metric, best validation metric,
-best epoch, and whether training ever improved over the untouched v2.6 model. The final result JSONL
+best epoch, and whether training ever improved over the untouched selected model. The final result JSONL
 also records the number and names of `.pth` files and the best-checkpoint path, if one exists.
 
 #### Diagnosing flat loss and empty checkpoint directories
@@ -719,7 +745,7 @@ An empty checkpoint directory is also possible by design:
 1. `SAVE_CHECKPOINT_INTERVAL=0` maps to `save_checkpoint_interval=None`, so periodic `.pth` files are
    disabled.
 2. TabPFN writes `checkpoint_<train-size>_best.pth` only when a post-update validation epoch improves
-   over the initial, untouched v2.6 model.
+   over the initial, untouched selected model.
 3. If no epoch improves, no best file is written and early stopping restores the initial weights in
    memory for final inference.
 
@@ -830,7 +856,8 @@ N_ESTIMATORS=8 \
 scripts/run_full.sh 6
 ```
 
-On TabPFN 8.2, `DEVICE=auto` also selects all visible CUDA GPUs. An explicit `DEVICES` list is useful
+On modern TabPFN 8.2 models, `DEVICE=auto` also selects all visible CUDA GPUs. An explicit `DEVICES`
+list is useful
 for reproducibility and GPU allocation. Multi-GPU inference parallelizes ensemble estimators; it does
 not partition one training context's rows across GPU memory. It is supported for
 `FIT_MODE=fit_preprocessors` and `FIT_MODE=low_memory`, but not `fit_with_cache`. Choose at least as
@@ -840,7 +867,7 @@ For kNN, TabPFN 8.2's `predict_proba_batched` API also fuses several independent
 one forward pass. The adapter groups contexts only when their context shape, query shape, and class
 set are compatible, then limits each fused call with `CONTEXT_BATCH_SIZE`. This removes the previous
 one-GPU-launch-per-query bottleneck while the explicit device list distributes ensemble work over all
-four GPUs:
+four GPUs. Original v1 uses a single-device worker and sequential context inference:
 
 ```bash
 DEVICES="cuda:0 cuda:1 cuda:2 cuda:3" \
@@ -904,10 +931,10 @@ The repository includes three paper-oriented benchmark sources:
   and exclusion of the four named datasets known to contain missing values. The original stored ten
   TabZilla train/validation/test folds are used without resplitting.
 
-Here “TabPFN v1” names the v1 paper's **dataset and split benchmark**. Prediction still uses the
-`TabPFNClassifier` implementation from package version 8.2.0 with the v2.6 classifier checkpoint, so
-the resulting numbers are not intended to reproduce the historical v1 checkpoint exactly. Both the
-library and checkpoint version are recorded alongside final results.
+Here “TabPFN v1” in a benchmark name denotes the v1 paper's **dataset and split protocol**, while
+`MODEL_VERSION` independently selects the prediction checkpoint. The default remains v2.6 for
+backward-compatible results; set it to `v1` for the historical classifier or `v3` for the current
+model. Both the library and checkpoint version are recorded alongside final results.
 
 `scripts/run_tabpfn_v1_benchmark.sh` defaults to the explicit
 `INFERENCE_PROFILE=single-estimator` profile. It sets `n_estimators=1` for full, random, and kNN runs,
@@ -1125,7 +1152,7 @@ context. Start with the smoke commands and estimate runtime before launching all
 The baseline implementation now supports the TabPFN v1 30-dataset protocol and the official
 TabZilla folds selected by the LoCalPFN filters. Frozen full-context, random-row, and exact-kNN
 baselines are implemented. LoCalPFN-style supervised task fine-tuning is also implemented for
-OpenML-CC18 and stored TabZilla folds with the pinned TabPFN v2.6 checkpoint; the immediate milestone
+OpenML-CC18 and stored TabZilla folds with selectable TabPFN v2.6/v3 checkpoints; the immediate milestone
 is GPU smoke validation followed by matched frozen-kNN versus fine-tuned-kNN experiments.
 
 ## Reference

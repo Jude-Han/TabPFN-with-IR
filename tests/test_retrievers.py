@@ -1,3 +1,5 @@
+import sys
+
 import numpy as np
 import pytest
 
@@ -40,7 +42,10 @@ def test_knn_returns_query_specific_nearest_rows(training_data):
     result = retriever.retrieve(np.asarray([[0.2], [8.0]], dtype=np.float64), 2)
     np.testing.assert_array_equal(result.indices[0], [0, 1])
     np.testing.assert_array_equal(result.indices[1], [3, 2])
-    assert type(retriever._index).__name__ == "IndexFlatL2"
+    if sys.platform == "darwin":
+        assert retriever.backend == "numpy"
+    else:
+        assert type(retriever._index).__name__ == "IndexFlatL2"
     np.testing.assert_allclose(result.scores[0], [-0.04, -0.64], atol=1e-6)
     assert np.all(result.scores <= 0)
 

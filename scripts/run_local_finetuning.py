@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fine-tune TabPFN v2.6 with LoCalPFN-style local kNN episodes."""
+"""Fine-tune a modern TabPFN model with LoCalPFN-style local kNN episodes."""
 
 from __future__ import annotations
 
@@ -30,7 +30,10 @@ from tabpfn_ir.finetuning_logging import (
     JsonlFinetuningLogger,
     TensorBoardFinetuningLogger,
 )
-from tabpfn_ir.models import LocalFinetunedTabPFNClassifier
+from tabpfn_ir.models import (
+    TABPFN_FINETUNING_MODEL_VERSIONS,
+    LocalFinetunedTabPFNClassifier,
+)
 from tabpfn_ir.retrieval import resolve_context_specification
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +46,12 @@ def parse_args() -> argparse.Namespace:
         choices=["openml-cc18", "localpfn"],
         required=True,
         help="Both supported protocols provide an explicit validation fold.",
+    )
+    parser.add_argument(
+        "--model-version",
+        choices=TABPFN_FINETUNING_MODEL_VERSIONS,
+        default="v2.6",
+        help="Modern TabPFN checkpoint to fine-tune. Original v1 is inference-only.",
     )
     parser.add_argument(
         "--k",
@@ -171,14 +180,14 @@ def _validate_args(args: argparse.Namespace) -> None:
         warnings.warn(
             "--save-checkpoint-interval=0 disables periodic .pth files. A best "
             "checkpoint is saved only if validation improves over the untouched "
-            "v2.6 model, so an empty checkpoint directory can be expected.",
+            f"{args.model_version} model, so an empty checkpoint directory can be expected.",
             UserWarning,
             stacklevel=2,
         )
     if args.learning_rate >= 1e-3:
         warnings.warn(
             f"learning_rate={args.learning_rate:g} is unusually large for full-weight "
-            "TabPFN v2.6 transfer. The LoCalPFN paper's 0.01 setting can destroy the "
+            f"TabPFN {args.model_version} transfer. The LoCalPFN paper's 0.01 setting can destroy the "
             "pretrained solution within a few optimizer steps; start near 1e-5.",
             UserWarning,
             stacklevel=2,
@@ -210,7 +219,7 @@ def _validate_args(args: argparse.Namespace) -> None:
 
 def _fine_tuning_configuration(args: argparse.Namespace) -> dict[str, object]:
     return {
-        "model_version": "v2.6",
+        "model_version": args.model_version,
         "tabpfn_package_version": "8.2.0",
         "context_specification": args.k,
         "maximum_context_size": args.maximum_context_size,
@@ -233,7 +242,7 @@ def _fine_tuning_configuration(args: argparse.Namespace) -> dict[str, object]:
         "activation_checkpointing": args.activation_checkpointing,
         "compatibility_backports": (
             ["tabpfn-8.2.0-v2.6-activation-checkpoint-container"]
-            if args.activation_checkpointing
+            if args.activation_checkpointing and args.model_version == "v2.6"
             else []
         ),
         "fixed_preprocessing_seed": args.fixed_preprocessing_seed,
@@ -376,6 +385,7 @@ def run_fold(
 
     finetuner = LocalFinetunedTabPFNClassifier(
         context_size=context_size,
+        model_version=args.model_version,
         train_query_size=args.train_query_size,
         steps_per_epoch=args.steps_per_epoch,
         episode_batch_size=args.episode_batch_size,
@@ -428,7 +438,7 @@ def run_fold(
             else "training stopped before the next periodic save"
         )
         validation_explanation = (
-            "no validation epoch beat the initial v2.6 model, so TabPFN restored "
+            f"no validation epoch beat the initial {args.model_version} model, so TabPFN restored "
             "the in-memory initial weights for final inference"
             if args.early_stopping
             else "best-checkpoint selection and initial-weight restoration were disabled"

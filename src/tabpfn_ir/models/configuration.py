@@ -5,9 +5,23 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-
 MULTI_GPU_FIT_MODES = frozenset({"fit_preprocessors", "low_memory"})
 TABPFN_INFERENCE_PROFILES = frozenset({"default", "single-estimator"})
+TABPFN_MODEL_VERSIONS = ("v1", "v2.6", "v3")
+TABPFN_FINETUNING_MODEL_VERSIONS = ("v2.6", "v3")
+
+
+def validate_model_version(model_version: str, *, finetuning: bool = False) -> str:
+    """Validate and return a model version accepted by this project."""
+
+    supported = TABPFN_FINETUNING_MODEL_VERSIONS if finetuning else TABPFN_MODEL_VERSIONS
+    if model_version not in supported:
+        choices = ", ".join(supported)
+        operation = "fine-tuning" if finetuning else "inference"
+        raise ValueError(
+            f"Unsupported TabPFN model version {model_version!r} for {operation}; use {choices}."
+        )
+    return model_version
 
 
 def resolve_n_estimators(
@@ -33,6 +47,7 @@ def resolve_n_estimators(
 def build_tabpfn_classifier_kwargs(
     *,
     device: str,
+    model_version: str = "v2.6",
     devices: Sequence[str] | None = None,
     ignore_pretraining_limits: bool = False,
     fit_mode: str = "fit_preprocessors",
@@ -40,13 +55,14 @@ def build_tabpfn_classifier_kwargs(
 ) -> dict[str, Any]:
     """Build a version-forward TabPFN configuration for one or many GPUs."""
 
+    validate_model_version(model_version)
     selected_devices = tuple(devices or ())
     if selected_devices and len(set(selected_devices)) != len(selected_devices):
         raise ValueError("--devices cannot contain duplicate device names.")
     if len(selected_devices) > 1 and fit_mode not in MULTI_GPU_FIT_MODES:
-        raise ValueError(
-            "Multiple GPUs require --fit-mode fit_preprocessors or low_memory."
-        )
+        raise ValueError("Multiple GPUs require --fit-mode fit_preprocessors or low_memory.")
+    if model_version == "v1" and len(selected_devices) > 1:
+        raise ValueError("TabPFN v1 supports exactly one device per worker.")
     if n_estimators is not None and n_estimators <= 0:
         raise ValueError("--n-estimators must be positive.")
 

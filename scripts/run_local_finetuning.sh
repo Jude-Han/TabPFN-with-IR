@@ -9,6 +9,7 @@ checkpoint_root="${CHECKPOINT_ROOT:-${repository_dir}/outputs/local-finetuning/c
 
 args=(
   --benchmark "${benchmark}"
+  --model-version "${MODEL_VERSION:-v2.6}"
   --k "${CONTEXT_SIZE:-localpfn}"
   --maximum-context-size "${MAXIMUM_CONTEXT_SIZE:-1000}"
   --train-query-size "${TRAIN_QUERY_SIZE:-1000}"

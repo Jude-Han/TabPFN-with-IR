@@ -12,9 +12,14 @@ from tabpfn_ir.data import (
     load_openml_dataset,
     localpfn_split_indices,
 )
-from tabpfn_ir.evaluation import run_retrieval_experiment
 from tabpfn_ir.environment import load_project_dotenv
-from tabpfn_ir.models import ContextualTabPFNClassifier, build_tabpfn_classifier_kwargs
+from tabpfn_ir.evaluation import run_retrieval_experiment
+from tabpfn_ir.models import (
+    LEGACY_TABPFN_VERSION,
+    TABPFN_MODEL_VERSIONS,
+    ContextualTabPFNClassifier,
+    build_tabpfn_classifier_kwargs,
+)
 from tabpfn_ir.retrieval import (
     FullContextRetriever,
     KNNRetriever,
@@ -22,7 +27,6 @@ from tabpfn_ir.retrieval import (
     context_size_from_ratio,
     resolve_context_specification,
 )
-
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 
@@ -80,9 +84,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--n-estimators", type=int)
     parser.add_argument(
         "--model-version",
-        choices=["v2.6"],
+        choices=TABPFN_MODEL_VERSIONS,
         default="v2.6",
-        help="Pinned TabPFN checkpoint family. TabPFN 8.x otherwise defaults to v3.",
+        help="TabPFN checkpoint family: original v1, v2.6, or v3.",
+    )
+    parser.add_argument(
+        "--v1-runtime-path",
+        type=Path,
+        help="Target directory containing isolated tabpfn==0.1.10.",
+    )
+    parser.add_argument(
+        "--v1-checkpoint-path",
+        type=Path,
+        help="Optional local original-v1 .cpkt file.",
     )
     parser.add_argument(
         "--context-batch-size",
@@ -158,6 +172,7 @@ def main() -> None:
     retriever = build_retriever(args.method, args.seed)
     tabpfn_kwargs = build_tabpfn_classifier_kwargs(
         device=args.device,
+        model_version=args.model_version,
         devices=args.devices,
         ignore_pretraining_limits=args.ignore_pretraining_limits,
         fit_mode=args.fit_mode,
@@ -166,6 +181,10 @@ def main() -> None:
     predictor = ContextualTabPFNClassifier(
         tabpfn_kwargs=tabpfn_kwargs,
         model_version=args.model_version,
+        v1_runtime_path=(str(args.v1_runtime_path) if args.v1_runtime_path else None),
+        v1_checkpoint_path=(
+            str(args.v1_checkpoint_path) if args.v1_checkpoint_path else None
+        ),
         context_batch_size=args.context_batch_size,
         use_batched_contexts=not args.disable_batched_contexts,
     )
@@ -211,6 +230,19 @@ def main() -> None:
         "tabpfn_configuration": {
             **tabpfn_kwargs,
             "model_version": args.model_version,
+            "legacy_tabpfn_package_version": (
+                LEGACY_TABPFN_VERSION if args.model_version == "v1" else None
+            ),
+            "v1_runtime_path": (
+                str(args.v1_runtime_path)
+                if args.model_version == "v1" and args.v1_runtime_path
+                else None
+            ),
+            "v1_checkpoint_path": (
+                str(args.v1_checkpoint_path)
+                if args.model_version == "v1" and args.v1_checkpoint_path
+                else None
+            ),
             "context_batch_size": args.context_batch_size,
             "batched_contexts": not args.disable_batched_contexts,
         },
