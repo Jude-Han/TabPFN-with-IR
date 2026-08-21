@@ -1,7 +1,11 @@
 import numpy as np
 import pytest
 
-from scripts.run_context_imitation_curve import _write_query_csv, _write_summary_csv
+from scripts.run_context_imitation_curve import (
+    _write_query_csv,
+    _write_summary_csv,
+    configure_cpu_threads,
+)
 from tabpfn_ir.evaluation import (
     minimum_stable_context_sizes,
     predictive_total_variation,
@@ -28,6 +32,11 @@ def test_resolve_context_grid_caps_deduplicates_and_appends_full():
 
     with pytest.raises(ValueError, match="positive"):
         resolve_context_grid([0, 16], n_train=100)
+
+
+def test_cpu_thread_configuration_rejects_non_positive_values():
+    with pytest.raises(ValueError, match="cpu-threads"):
+        configure_cpu_threads(0)
 
 
 def test_predictive_total_variation_is_computed_per_query_after_normalizing():

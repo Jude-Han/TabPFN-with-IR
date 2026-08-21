@@ -316,6 +316,24 @@ a `*.queries.csv` file containing each query's minimum stable context size. The 
 `--max-query-samples 0 --inference-profile default` for a complete, ensemble-based confirmation.
 Choose `k` only on the validation split, then rerun the chosen rule once on the test split.
 
+Limit FAISS, BLAS/OpenMP, and PyTorch's later-loaded intra-op runtime to four CPU threads, while
+parallelizing a four-member TabPFN ensemble over four GPUs:
+
+```bash
+python scripts/run_context_imitation_curve.py \
+  --dataset-id 31 --target class --fold 0 \
+  --cpu-threads 4 \
+  --devices cuda:0 cuda:1 cuda:2 cuda:3 \
+  --inference-profile default --n-estimators 4 \
+  --output outputs/credit-g-fold0-imitation-4gpu.json
+```
+
+TabPFN 8.2.0 distributes **ensemble members**, not different `k` points, over the listed GPUs. The
+curve therefore still evaluates its `k` values sequentially, while each `k` uses the GPUs in
+parallel. At least as many ensemble members as GPUs are needed to keep every GPU occupied. The
+pilot's `single-estimator` profile deliberately uses only one GPU even if multiple devices are
+listed; the CLI prints a warning for that configuration.
+
 `localpfn` resolves to `min(int(10 * sqrt(n_train)), MAXIMUM_CONTEXT_SIZE)`, where the default
 maximum is `1000`. A budget larger than the training fold is capped at `n_train`. Retrieval uses
 `faiss.IndexFlatL2` and processes query searches in batches of 512.

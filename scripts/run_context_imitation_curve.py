@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import os
 from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from time import perf_counter
@@ -25,6 +26,7 @@ from tabpfn_ir.retrieval import KNNRetriever
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONTEXT_SIZES = (16, 32, 64, 128, 256, 512, 1000)
+_THREADPOOL_LIMITER = None
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,6 +70,12 @@ def parse_args() -> argparse.Namespace:
         help="Stratified pilot-query cap; pass 0 to use the complete split.",
     )
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument(
+        "--cpu-threads",
+        type=int,
+        default=4,
+        help="Maximum CPU threads used by FAISS and loaded BLAS/OpenMP runtimes.",
+    )
     parser.add_argument("--device", default="auto")
     parser.add_argument(
         "--devices",
@@ -103,6 +111,40 @@ def parse_args() -> argparse.Namespace:
         help="JSON output. Matching .summary.csv and .queries.csv files are also written.",
     )
     return parser.parse_args()
+
+
+def configure_cpu_threads(cpu_threads: int) -> None:
+    """Apply one thread limit to FAISS and the numerical runtimes used later."""
+
+    if cpu_threads <= 0:
+        raise ValueError("--cpu-threads must be positive.")
+    value = str(cpu_threads)
+    for variable in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "BLIS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        os.environ[variable] = value
+
+    # NumPy/FAISS are imported before CLI parsing. threadpoolctl and FAISS's
+    # runtime API therefore apply the limit to already-loaded native runtimes;
+    # PyTorch is imported lazily afterwards and observes OMP_NUM_THREADS.
+    global _THREADPOOL_LIMITER
+    try:
+        from threadpoolctl import threadpool_limits
+    except ImportError:  # pragma: no cover - installed through scikit-learn
+        _THREADPOOL_LIMITER = None
+    else:
+        _THREADPOOL_LIMITER = threadpool_limits(limits=cpu_threads)
+
+    try:
+        import faiss
+    except ImportError:  # pragma: no cover - KNNRetriever gives the actionable error
+        return
+    faiss.omp_set_num_threads(cpu_threads)
 
 
 def software_versions() -> dict[str, str | None]:
@@ -228,6 +270,7 @@ def _print_curve(payload: dict[str, object]) -> None:
 def main() -> None:
     load_project_dotenv(REPOSITORY_ROOT / ".env", override=False)
     args = parse_args()
+    configure_cpu_threads(args.cpu_threads)
     if args.fold < 0 or args.fold >= 10:
         raise ValueError("--fold must be in 0..9.")
     if args.tv_tolerance < 0:
@@ -242,6 +285,12 @@ def main() -> None:
         inference_profile=args.inference_profile,
         n_estimators=args.n_estimators,
     )
+    if args.devices and len(args.devices) > 1 and args.n_estimators == 1:
+        print(
+            "warning: TabPFN parallelizes ensemble members across GPUs, but the "
+            "single-estimator profile has only one member. Use "
+            "--inference-profile default --n-estimators N to utilize N GPUs."
+        )
 
     dataset = load_openml_dataset(
         args.dataset_id,
@@ -329,6 +378,10 @@ def main() -> None:
             "maximum": args.max_query_samples or None,
             "selected": len(query_indices),
             "available": len(evaluation_indices),
+        },
+        "runtime": {
+            "cpu_threads": args.cpu_threads,
+            "gpu_parallelism": "TabPFN ensemble members are distributed across devices.",
         },
         "retrieval": {
             "method": "exact-l2-knn",
